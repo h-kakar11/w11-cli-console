@@ -22,9 +22,10 @@ import winreg
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
 NAME = "startup"
-ALIASES = ["su"]
+ALIASES = ["su", "start"]
 SUMMARY = "Enable or disable apps that start with Windows"
-USAGE = "su ls | su <id> | su <id> on|off   (e.g. su 3 off)"
+USAGE = "su ls | su <id> | su <id> on|off | su rm <id>   (e.g. su 3 off)"
+REMOVE_WORDS = ("rm", "remove", "delete", "del")
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APPROVED_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
@@ -164,11 +165,60 @@ def _list():
         print(f"{entry['id']:<4}{entry['name'][:32]:<34}{_state(entry):<10}{entry['scope']}")
 
 
+def _remove(entry):
+    """Deletes the startup entry itself: its Run value, or its shortcut in the Startup folder."""
+    try:
+        if entry["kind"] == "run":
+            with winreg.OpenKey(entry["hive"], RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, entry["name"])
+        else:
+            os.remove(entry["command"])
+    except PermissionError:
+        raise StartupError(
+            f"removing {entry['name']} needs administrator rights. Run the terminal as administrator.", 1
+        )
+    except FileNotFoundError:
+        raise StartupError(f"{entry['name']} is already gone", 1)
+
+
+def _confirm(question):
+    try:
+        return input(question).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def _remove_command(args):
+    if len(args) != 2:
+        raise StartupError("usage: su rm <id>", 2)
+    try:
+        entry_id = int(args[1])
+    except ValueError:
+        raise StartupError("su rm needs an id from 'su ls'", 2)
+
+    entry = _get_entry(entry_id)
+    if not _confirm(
+        f"Remove {entry['name']} from startup? It won't start with Windows again, "
+        "and the app stays installed. This can't be undone. [y/N]: "
+    ):
+        print("cancelled")
+        return
+
+    print(f"removing {entry['name']} from startup... expect it to vanish from 'su ls' at once.")
+    _remove(entry)
+    print(f"removed {entry['name']} from startup")
+
+
 def _dispatch(args):
-    if args[0].lower() == "ls":
+    if args[0].lower() in ("ls", "list"):
         if len(args) > 1:
             raise StartupError("usage: su ls", 2)
         _list()
+        return
+
+    if args[0].lower() in REMOVE_WORDS:
+        _remove_command(args)
         return
 
     try:

@@ -1,0 +1,47 @@
+The pattern for a new settings page
+Every page is one .py file in the project folder. app.py finds it on startup, so you never edit app.py to add one. Use volume.py as the template for id-based pages and startup.py for on/off toggles.
+
+1. Header block. Four constants that app.py reads:
+
+
+NAME = "volume"                   # the command word
+ALIASES = ["vm", "vol"]           # short forms, must not clash with other pages
+SUMMARY = "Alter system and per-app volume"
+USAGE = "vm ls | vm <id> | vm <id> <0-100>"
+2. One entry point. run(args) gets the words after the name and returns an exit code:
+
+0 success
+1 system or device error
+2 bad usage
+Handle empty args and help/? first, then dispatch. Catch your own error class in run(), print it to stderr as error: ..., and return its code.
+
+3. Subcommands use the same words everywhere.
+
+Listing: ls or list
+Removing: rm, remove, delete, uninstall, del
+Toggling: on/enable, off/disable
+Show or set one item: <id> shows it, <id> <value> sets it
+Accept the long and short forms in every page. The README says the same thing.
+
+4. Ids come from one function. Build the list in one function, sort it alphabetically, number it from 1, and use that same function for both the listing and the action. This keeps ls and the action in agreement. Tell the user that ids can shift when the list changes.
+
+5. Output.
+
+Listings use one line per item, with an id and a name, and are coloured per row. Use os.system("") once to enable colour in the Windows console.
+For long lists, print down each column and then start the next one, using the terminal width from shutil.get_terminal_size().
+Print results on one line, such as Discord: 90%.
+6. Changes that can't be undone need a confirmation. Ask before acting, say what will happen, and treat anything other than y or yes as no. Say what to expect, for example "expect a prompt or a window from the uninstaller."
+
+7. Prefer reversible changes. Change a switch or a value rather than deleting something. startup turns apps off by changing Windows' approval entry, so nothing is lost.
+
+8. Use Python first, PowerShell second.
+
+Use winreg, ctypes or a package such as pycaw where possible.
+Use PowerShell only when no Python route exists, and fall back to it only for that part.
+Add any new package to requirements.txt.
+9. Test without side effects. Set a value to the value it already has, answer "n" to confirmations, and check bad ids and bad words. Only try a real change when you can put it back.
+
+10. Register the page.
+
+Add a row to the README table with the names and a one-line description.
+Check that no alias matches another page's name. Two pages with the same alias silently override each other, and nothing warns you.

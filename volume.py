@@ -23,7 +23,7 @@ from pycaw.pycaw import AudioUtilities
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
 NAME = "volume"
-ALIASES = ["vm"]
+ALIASES = ["vm", "vol"]
 SUMMARY = "Alter system and per-app volume"
 USAGE = "vm ls | vm <id> | vm <id> <0-100>   (id 0 = system; vm 3 50 = source 3 to 50%)"
 
@@ -113,7 +113,7 @@ def _list():
 # COMMAND — app.py calls run(args) with everything after "volume"/"vm"
 # ======================================================================
 def _dispatch(args):
-    if args[0].lower() == "ls":
+    if args[0].lower() in ("ls", "list"):
         if len(args) > 1:
             raise VolumeError("usage: vm ls", 2)
         _list()

@@ -14,8 +14,12 @@ py app.py
 | Setting | Aliases | What it does |
 |---|---|---|
 | brightness | `bn`, `b`, `bright`, `screen`, `monitor`, `display` | Screen brightness |
-| volume | `vm` | System and per-app volume |
-| startup | `su` | Apps that start with Windows |
+| volume | `vm`, `vol` | System and per-app volume |
+| startup | `su`, `start` | Apps that start with Windows |
+| apps | `app` | Installed apps, and uninstalling them |
+| process | `prc` | Running processes, ending them, live system stats |
+
+Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 
 Run `py app.py` for an interactive console, or pass a command directly, e.g. `py app.py bn 40`. Use `help` to list everything.
 
@@ -48,9 +52,29 @@ su ls          list startup apps with id and state
 su 3           show whether app 3 is enabled
 su 3 off       stop app 3 starting at sign-in
 su 3 on        start it at sign-in again
+su rm 3        remove app 3 from startup entirely (asks you to confirm first)
 ```
 
 This changes the same switch as Task Manager's Startup tab, so nothing is deleted. Changes apply at the next sign-in. All-users apps need an administrator terminal.
+
+### Apps
+
+```
+apps ls        list installed apps, alphabetical, with ids
+apps rm 5      uninstall app 5 (asks you to confirm first)
+```
+
+Lists the same apps as Settings > Installed apps, including Store apps. Uninstalling can't be undone.
+
+### Process
+
+```
+prc ls            programs, alphabetical, one id each, with a process count (red = Windows system)
+prc ls /verbose   live CPU, RAM, GPU, Wi-Fi and disk usage, then every process on its own row
+prc kill 12       end every process with program 12's name (system programs ask you twice)
+```
+
+Ids follow the list, so check the name in the prompt before you say y. Ending a process loses its unsaved work.
 
 ## Adding a setting
 
@@ -71,6 +95,6 @@ def run(args):             # args = words after the name
 
 - `app.py`: the settings page and console
 - `intro.txt`: the banner shown when the console starts
-- `brightness.py`, `volume.py`, `startup.py`: settings
+- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`: settings
 - `brightness.ahk`: the older AutoHotkey version of brightness
 - `requirements.txt`: Python packages (`pycaw`)
