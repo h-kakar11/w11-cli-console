@@ -1,4 +1,9 @@
 # w11-cli-console
+
+## this is just a cli that you can use to alter loads of settings on w11.
+
+the aim is to try and replace the windows settings app by having a CLI instead, with more functionality, and more customisation. 
+
 ## brightness
 
 `brightness.ahk` is a command-line screen brightness tool for Windows 11, ported from the brightness code in the [top bar](https://github.com/h-kakar11/ahk-top-bar-windows11) AutoHotkey script. It needs [AutoHotkey v2](https://www.autohotkey.com/).
