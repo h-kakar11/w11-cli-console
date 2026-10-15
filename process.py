@@ -32,6 +32,13 @@ NAME = "process"
 ALIASES = ["prc"]
 SUMMARY = "List and kill running processes, with live system stats"
 USAGE = "prc ls [/verbose] | prc show <id> | prc kill <id>   (rm, remove, delete also work)"
+HELP = [
+    ("prc ls", "programs, alphabetical, one id each, with a process count"),
+    ("prc ls /verbose", "live CPU, RAM, GPU, Wi-Fi and disk use, then every process"),
+    ("prc show <id>", "details for one program's processes"),
+    ("prc kill <id>", "end every process with that program's name (asks first)"),
+]
+TIP = "Red rows are Windows system programs. Ending one asks twice. Ending a process loses its unsaved work."
 
 LIST_WORDS = ("ls", "list")
 KILL_WORDS = ("kill", "rm", "remove", "delete", "del")

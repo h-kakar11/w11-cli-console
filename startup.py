@@ -25,6 +25,13 @@ NAME = "startup"
 ALIASES = ["su", "start"]
 SUMMARY = "Enable or disable apps that start with Windows"
 USAGE = "su ls | su <id> | su <id> on|off | su rm <id>   (e.g. su 3 off)"
+HELP = [
+    ("su ls", "list startup apps with their id and state"),
+    ("su <id>", "show whether one app starts with Windows"),
+    ("su <id> on|off", "let it start at sign-in, or stop it"),
+    ("su rm <id>", "remove it from startup entirely (asks you to confirm first)"),
+]
+TIP = "on and off change only Windows' switch, so nothing is lost. Changes apply at the next sign-in."
 REMOVE_WORDS = ("rm", "remove", "delete", "del")
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"

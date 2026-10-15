@@ -1,6 +1,10 @@
 The pattern for a new settings page
 Every page is one .py file in the project folder. app.py finds it on startup, so you never edit app.py to add one. Use volume.py as the template for id-based pages and startup.py for on/off toggles.
 
+The goal: someone who has never seen this tool should be able to type "settings", find the setting they want, read its intro, and do the job without leaving the terminal. Typing a setting name alone (vm, bn, su, prc, net) shows that intro. Plain words, one action per line, no jargon the user has to look up.
+
+Shared code lives in _core.py: finding the pages, the registry, and drawing the intro. app.py and settings.py both import it. Its name starts with an underscore, so app.py does not load it as a page. Do not copy its code into a page.
+
 1. Header block. Four constants that app.py reads:
 
 
@@ -8,14 +12,28 @@ NAME = "volume"                   # the command word
 ALIASES = ["vm", "vol"]           # short forms, must not clash with other pages
 SUMMARY = "Alter system and per-app volume"
 USAGE = "vm ls | vm <id> | vm <id> <0-100>"
-2. One entry point. run(args) gets the words after the name and returns an exit code:
+
+2. The intro. Two more constants, shown in blue when the user types the setting alone or with help/?/-h:
+
+HELP = [
+    ("vm ls", "list every audio source with its id (0 is the system)"),
+    ("vm <id>", "show the volume of one source"),
+    ("vm <id> <0-100>", "set one source to that percent"),
+]
+TIP = "Example: vm 3 50 sets source 3 to 50%. Ids follow the list, so run 'vm ls' first."
+
+HELP is one row per thing the user can do: the exact words to type, then a short description. Put the most common action first. Keep it to about six rows. TIP is optional: one line with an example, or the one thing that most often goes wrong. app.py draws the block, so pages never print their own intro. A page without HELP shows its USAGE line instead.
+
+RUN_ALONE = True is the one exception to "a name alone shows the intro". Only settings sets it, because typing "settings" is the whole command. Do not set it on a page that changes something: a stray name would run it.
+
+3. One entry point. run(args) gets the words after the name and returns an exit code:
 
 0 success
 1 system or device error
 2 bad usage
-Handle empty args and help/? first, then dispatch. Catch your own error class in run(), print it to stderr as error: ..., and return its code.
+app.py handles empty args and help words before run() is called. run() still handles them too, so the file works when run directly. Catch your own error class in run(), print it to stderr as error: ..., and return its code.
 
-3. Subcommands use the same words everywhere.
+4. Subcommands use the same words everywhere.
 
 Listing: ls or list
 Removing: rm, remove, delete, uninstall, del
@@ -23,25 +41,50 @@ Toggling: on/enable, off/disable
 Show or set one item: <id> shows it, <id> <value> sets it
 Accept the long and short forms in every page. The README says the same thing.
 
-4. Ids come from one function. Build the list in one function, sort it alphabetically, number it from 1, and use that same function for both the listing and the action. This keeps ls and the action in agreement. Tell the user that ids can shift when the list changes.
+5. Ids come from one function. Build the list in one function, sort it alphabetically, number it from 1, and use that same function for both the listing and the action. This keeps ls and the action in agreement. Tell the user that ids can shift when the list changes.
 
-5. Output.
+6. Output.
 
 Listings use one line per item, with an id and a name, and are coloured per row. Use os.system("") once to enable colour in the Windows console.
 For long lists, print down each column and then start the next one, using the terminal width from shutil.get_terminal_size().
 Print results on one line, such as Discord: 90%.
-6. Changes that can't be undone need a confirmation. Ask before acting, say what will happen, and treat anything other than y or yes as no. Say what to expect, for example "expect a prompt or a window from the uninstaller."
 
-7. Prefer reversible changes. Change a switch or a value rather than deleting something. startup turns apps off by changing Windows' approval entry, so nothing is lost.
+7. Changes that can't be undone need a confirmation. Ask before acting, say what will happen, and treat anything other than y or yes as no. Say what to expect, for example "expect a prompt or a window from the uninstaller."
 
-8. Use Python first, PowerShell second.
+8. Prefer reversible changes. Change a switch or a value rather than deleting something. startup turns apps off by changing Windows' approval entry, so nothing is lost.
+
+9. Use Python first, PowerShell second.
 
 Use winreg, ctypes or a package such as pycaw where possible.
 Use PowerShell only when no Python route exists, and fall back to it only for that part.
 Add any new package to requirements.txt.
-9. Test without side effects. Set a value to the value it already has, answer "n" to confirmations, and check bad ids and bad words. Only try a real change when you can put it back.
 
-10. Register the page.
+10. Test without side effects. Set a value to the value it already has, answer "n" to confirmations, and check bad ids and bad words. Only try a real change when you can put it back. Check the intro too: type the setting name alone and read it as a new user would.
+
+11. Register the page.
 
 Add a row to the README table with the names and a one-line description.
 Check that no alias matches another page's name. Two pages with the same alias silently override each other, and nothing warns you.
+The settings page lists every page on its own, so a new page appears there with no edit. Its number and the START WITH column come from the page's NAME, ALIASES, SUMMARY and the first row of HELP, so fill those in carefully.
+
+12. Make it easy for a person, not just a script. Before you finish a page, ask: if someone types "settings" and finds this line, would the next step be obvious? The first HELP row should be the thing they most likely want. The SUMMARY should say what they get, in under about 60 characters, because it is the only text they read in the list.
+
+What each setting is for
+
+These describe what the user wants from each page. Each intro should lead with the thing that setting is most often used for.
+
+settings (menu): The front door. Someone who does not know the commands types "settings" and sees every setting in one numbered, blue list, with what each does and the first command to type. They can then type a number or a name at the prompt to open a setting's intro. It should always be the easiest thing to find, so every new page has to show up here with a clear SUMMARY.
+
+volume (vm, vol): Quick control of how loud each app is, when several are playing (a browser, Discord, a game). The intro leads with vm ls, then vm <id> <0-100>. Say that ids are numbered by name, so they shift.
+
+brightness (bn, b, screen, ...): One number, most of the time. Most people type bn 40, so the intro leads with the number form, then get, up and down. info is last, because it is for troubleshooting. The TIP names DDC/CI, since that is the usual reason it fails on an external monitor.
+
+startup (su, start): Speed up sign-in by stopping apps from starting, safely. The intro stresses that on and off are reversible and that rm is the one that deletes. Say when changes apply (next sign-in) and that all-users apps need an administrator terminal.
+
+apps (app): Find an installed app and uninstall it, with the same list you would see in Settings. Lead with apps ls. Uninstalling always asks first, and the intro says it can't be undone.
+
+process (prc): Find what is using the CPU or memory and end it. The intro leads with prc ls, then prc ls /verbose for live numbers, then prc kill last, with the warning that unsaved work is lost. Red rows are Windows system programs, and the TIP says so.
+
+wifi (net, internet, wf): Getting online quickly. The most common path is wifi on, which joins the best saved network. For a new network it is wifi ls, then wifi <id> on, which asks for the password. The intro leads with on and status, and rm is last. The TIP says to run wifi ls first, and it should mention that Windows needs Location on to show network names.
+
+New pages should follow the same order: the most common action first, the risky one last with its warning, and a TIP that heads off the first thing that goes wrong.

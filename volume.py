@@ -25,7 +25,13 @@ from pycaw.pycaw import AudioUtilities
 NAME = "volume"
 ALIASES = ["vm", "vol"]
 SUMMARY = "Alter system and per-app volume"
-USAGE = "vm ls | vm <id> | vm <id> <0-100>   (id 0 = system; vm 3 50 = source 3 to 50%)"
+USAGE = "type vm ls, or 'volume list'. Change volume by typing 'volume <id> <0-100>' (id 0 = system; vm 3 50 = source 3 to 50%)"
+HELP = [
+    ("vm ls", "list every audio source with its id (0 is the system)"),
+    ("vm <id>", "show the volume of one source"),
+    ("vm <id> <0-100>", "set one source to that percent"),
+]
+TIP = "Example: vm 3 50 sets source 3 to 50%. Ids follow the list, so run 'vm ls' first."
 
 SYSTEM_ID = 0
 SYSTEM_NAME = "System"

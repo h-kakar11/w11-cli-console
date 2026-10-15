@@ -1,6 +1,6 @@
 # w11-cli-console
 
-Change Windows 11 settings from the command line. `app.py` is the settings page: run it, then use a setting by name or alias.
+Change Windows 11 settings from the command line. Run `app.py`, then type `settings` to see every setting in one list, with the first command to type for each.
 
 ## Setup
 
@@ -18,10 +18,12 @@ py app.py
 | startup | `su`, `start` | Apps that start with Windows |
 | apps | `app` | Installed apps, and uninstalling them |
 | process | `prc` | Running processes, ending them, live system stats |
+| wifi | `net`, `internet`, `wf` | Join and leave Wi-Fi networks, forget saved ones |
+| settings | `menu` | Every setting in one list, and how to open each |
 
 Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 
-Run `py app.py` for an interactive console, or pass a command directly, e.g. `py app.py bn 40`. Use `help` to list everything.
+Run `py app.py` for an interactive console, or pass a command directly, e.g. `py app.py bn 40`. Type `settings` to see every setting, numbered, with what it does. Type a setting's name on its own, such as `vm` or `wifi`, to see a short blue list of what it can do. Use `help` to list everything.
 
 ### Brightness
 
@@ -76,6 +78,20 @@ prc kill 12       end every process with program 12's name (system programs ask 
 
 Ids follow the list, so check the name in the prompt before you say y. Ending a process loses its unsaved work.
 
+### Wi-Fi
+
+```
+wifi ls           list Wi-Fi networks in range with id, signal, security and state
+wifi status       show the network you are connected to
+wifi on           join the strongest saved network in range
+wifi 3 on         join network 3 (asks for the password if it is new)
+wifi 3 off        disconnect, if you are connected to network 3
+wifi off          disconnect from Wi-Fi
+wifi rm 3         forget network 3's saved password (asks you to confirm first)
+```
+
+Ids are alphabetical, so they can shift when networks come and go. Run `wifi ls` first. Windows only shows network names when Location is on for apps, so turn that on if `wifi ls` asks for it. Passwords are typed hidden and saved by Windows; the temporary file used to add a network is deleted straight away.
+
 ## Adding a setting
 
 Create a `.py` file in this folder. `app.py` loads it automatically. It needs:
@@ -85,6 +101,8 @@ NAME = "mysetting"          # command name
 ALIASES = ["ms"]            # optional short names
 SUMMARY = "what it does"
 USAGE = "ms <args>"
+HELP = [("ms <args>", "what this does")]   # the blue intro shown when the name is typed alone
+TIP = "optional: one line of example or advice"
 
 def run(args):             # args = words after the name
     ...
@@ -93,8 +111,11 @@ def run(args):             # args = words after the name
 
 ## Files
 
-- `app.py`: the settings page and console
+- `app.py`: the console and command routing
+- `_core.py`: code shared by app.py and the settings page (finding pages, drawing intros)
 - `intro.txt`: the banner shown when the console starts
-- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`: settings
+- `settings.py`: the `settings` list, which shows every setting
+- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`: settings
+- `fashion.txt`: the pattern every new page follows, and what each setting is for
 - `brightness.ahk`: the older AutoHotkey version of brightness
 - `requirements.txt`: Python packages (`pycaw`)

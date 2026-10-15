@@ -10,6 +10,14 @@ NAME = "brightness"
 ALIASES = ["bn", "b", "bright", "brightness", "screen", "monitor", "display"]
 SUMMARY = "Alter monitor screen brightness"
 USAGE = "bn [set] <number> | bn get | bn up [step] | bn down [step]   (set is optional: bn 40 = bn set 40)"
+HELP = [
+    ("bn <0-100>", "set the brightness, e.g. bn 40"),
+    ("bn get", "print the current brightness"),
+    ("bn up [step]", "raise it, 5 points by default"),
+    ("bn down [step]", "lower it, 5 points by default"),
+    ("bn info", "show which control is used: ddc or wmi"),
+]
+TIP = "External monitors need DDC/CI turned on in the monitor's own menu. Laptop panels use WMI."
 
 # ======================================================================
 # CONFIG

@@ -28,6 +28,11 @@ NAME = "apps"
 ALIASES = ["app"]
 SUMMARY = "List and uninstall installed apps"
 USAGE = "apps ls | apps rm <id>"
+HELP = [
+    ("apps ls", "list installed apps, alphabetical, with ids"),
+    ("apps rm <id>", "uninstall that app (asks you to confirm first)"),
+]
+TIP = "Lists the same apps as Settings > Installed apps, Store apps included. Uninstalling can't be undone."
 
 UNINSTALL_KEYS = [
     (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
