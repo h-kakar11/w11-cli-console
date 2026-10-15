@@ -5,13 +5,16 @@ app.py and the settings page both import this. The name starts with an underscor
 so app.py does not load it as a setting.
 """
 
+import ctypes
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SKIP = {"app.py"}
 HELP_WORDS = ("help", "-h", "--help", "?", "/?", "/help")
+AGENT_FLAGS = ("--json", "--yes")  # --json: machine-readable output; --yes: answer a confirmation in advance
 BLUE = "\033[34m"
 RESET = "\033[0m"
 
@@ -55,7 +58,8 @@ def unique_settings():
 
 
 def page_help(module):
-    """The intro for one setting: what it can do, as a blue list, from the page's HELP rows."""
+    """The intro for one setting: what it can do, as a blue list, from the page's HELP rows.
+    A row with an empty syntax, such as ("", "known networks"), is a heading for the rows under it."""
     rows = getattr(module, "HELP", [])
     width = max([len(syntax) for syntax, _ in rows], default=0) + 3
     lines = [f"{module.NAME}: {module.SUMMARY}"]
@@ -63,11 +67,48 @@ def page_help(module):
     if aliases:
         lines.append("also called: " + ", ".join(aliases))
     lines.append("")
-    if rows:
-        lines += [f"  {syntax:<{width}}{text}" for syntax, text in rows]
-    else:
+    for syntax, text in rows:
+        if syntax:
+            lines.append(f"  {syntax:<{width}}{text}")
+        else:
+            lines += ["", f" {text}"]
+    if not rows:
         lines.append(f"  {module.USAGE}")
     tip = getattr(module, "TIP", "")
     if tip:
         lines += ["", tip]
     return BLUE + "\n".join(lines) + RESET
+
+
+# ----------------------------------------------------------------------
+# For pages that people and agents both use
+# ----------------------------------------------------------------------
+def split_flags(args, flags=AGENT_FLAGS):
+    """The words after a setting name without these flags, and which were given: (args, {"json": bool, ...})."""
+    lowered = [arg.lower() for arg in args]
+    given = {flag.lstrip("-"): flag in lowered for flag in flags}
+    return [arg for arg in args if arg.lower() not in flags], given
+
+
+def confirm(question, yes=False):
+    """Ask a y/N question; anything but y or yes is no. --yes answers it in advance, which an agent
+    passes only after the person has agreed to that change."""
+    if yes:
+        print(question + "yes (--yes)")
+        return True
+    try:
+        return input(question).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def print_json(data):
+    print(json.dumps(data, indent=2, default=str))
+
+
+def is_admin():
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False

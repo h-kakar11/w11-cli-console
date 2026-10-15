@@ -1,19 +1,92 @@
-The pattern for a new settings page
-Every page is one .py file in the project folder. app.py finds it on startup, so you never edit app.py to add one. Use volume.py as the template for id-based pages and startup.py for on/off toggles.
+fashion.txt: how this project is built, and how to add to it
 
-The goal: someone who has never seen this tool should be able to type "settings", find the setting they want, read its intro, and do the job without leaving the terminal. Typing a setting name alone (vm, bn, su, prc, net) shows that intro. Plain words, one action per line, no jargon the user has to look up.
+Read this before you change anything. It is written for the next person or agent who gets a prompt
+about this project. It is the project's memory: when you learn something the hard way, add it here.
 
-Shared code lives in _core.py: finding the pages, the registry, and drawing the intro. app.py and settings.py both import it. Its name starts with an underscore, so app.py does not load it as a page. Do not copy its code into a page.
+======================================================================
+START HERE
+======================================================================
 
-1. Header block. Four constants that app.py reads:
+What this is: w11-cli-console, a Windows 11 settings console in Python. "py app.py" opens an
+interactive console; "py app.py <setting> <words>" runs one command and exits. Each setting is one
+.py file (a "page") in the project folder, and app.py finds it by itself.
 
+The goal: someone who has never seen this tool should be able to type "settings", find the setting
+they want, read its intro, and do the job without leaving the terminal. Typing a setting name alone
+(vm, bn, su, prc, net) shows that intro. Plain words, one action per line, no jargon the user has to
+look up. An AI agent troubleshooting someone's PC should be able to run the same commands and read
+the results as data (--json).
+
+When you get a prompt:
+1. Read this file and README.md, then the existing page closest to the request (see "Which file to copy").
+2. Find out how Windows does it, read-only, in scratch scripts outside the project: a winreg read, a
+   WMI query, a WinRT call, a "netsh ... show". Check it works on this PC, and whether it needs
+   administrator rights, before you build on it.
+3. Write the page, or extend one. Code two pages need goes in _core.py or _net.py, not in both pages.
+4. Test it the safe way (see TESTING).
+5. Update README.md and this file (see FINISHING).
+6. In your reply, say what you verified on this PC and what you could not. Usually that is anything
+   that needs administrator rights, because the terminal you get is normally not elevated.
+
+======================================================================
+FILES
+======================================================================
+
+app.py           The console and the routing. You never edit it to add a page.
+_core.py         Shared by app.py and the pages (see SHARED CODE). Files starting with "_" are not
+                 loaded as pages, so shared code always goes in one of these.
+_net.py          Shared network code for wifi and ethernet, and any future network page (VPN, proxy).
+settings.py      The "settings" list. It reads every page itself, so never edit it to add one.
+volume.py, brightness.py, startup.py, apps.py, process.py, wifi.py, ethernet.py, hotspot.py,
+location.py, regedit.py
+                 The pages.
+intro.txt        The banner the console prints when it starts.
+README.md        For users: the table of settings and a section per setting.
+requirements.txt Python packages. Install with: py -m pip install -r requirements.txt
+brightness.ahk   The old AutoHotkey version of brightness. Not used.
+
+Which file to copy:
+- a list with ids, then act on one id .......... volume.py
+- on/off switches for things in a list ........ startup.py
+- registry policies, admin check, read-back ... location.py
+- a page built on _net.py ...................... ethernet.py (the smallest)
+- a Windows Runtime (WinRT) API ................ hotspot.py
+- netsh, and many settings under headings ...... wifi.py
+- an interactive page with its own prompt ...... regedit.py
+
+======================================================================
+ENVIRONMENT (this PC, as last seen)
+======================================================================
+
+- Windows 11 Pro. Python 3.14, run as "py". Packages: pycaw, psutil, comtypes, and the winrt-*
+  packages (pywinrt 3.2, which has wheels for 3.14).
+- The terminal is usually NOT elevated. HKLM writes, netsh interface, netcfg, starting services and
+  connection sharing all fail with "needs administrator". Build the admin check in, test that it
+  refuses cleanly, and report those paths as unverified.
+- There are two shells, Git Bash and PowerShell. Git Bash rewrites some slash arguments into file
+  paths: "ipconfig /all" and "reg query ... /v" break there, so run those in PowerShell. A Python
+  script in the scratchpad is easier than a one-liner when the code has backslashes or quotes.
+- Set PYTHONIOENCODING=utf-8 when you pipe app.py's output. The banner has box characters that
+  crash a cp1252 console.
+- Captured output shows colour codes as raw text, such as [34m. That is expected.
+- Git: remote "origin" is github.com/h-kakar11/w11-cli-console, branch main. Commit and push only
+  when asked. If GitHub "shows no updates", check "git log origin/main..main" for commits that were
+  never pushed (that was the cause once). The __pycache__/*.pyc files are tracked by mistake and
+  change on every run. Before you finish, restore them with "git checkout -- __pycache__/" and
+  delete any new untracked .pyc. There is no .gitignore yet.
+
+======================================================================
+THE PAGE CONTRACT
+======================================================================
+
+1. Header block. Constants that app.py and settings.py read:
 
 NAME = "volume"                   # the command word
-ALIASES = ["vm", "vol"]           # short forms, must not clash with other pages
-SUMMARY = "Alter system and per-app volume"
+ALIASES = ["vm", "vol"]           # short forms; must not clash with any other page's name or alias
+SUMMARY = "Alter system and per-app volume"     # under about 60 characters: it is all the settings list shows
 USAGE = "vm ls | vm <id> | vm <id> <0-100>"
 
-2. The intro. Two more constants, shown in blue when the user types the setting alone or with help/?/-h:
+2. The intro. Shown in blue when the user types the setting alone, or with help, ?, -h or /?:
 
 HELP = [
     ("vm ls", "list every audio source with its id (0 is the system)"),
@@ -22,56 +95,242 @@ HELP = [
 ]
 TIP = "Example: vm 3 50 sets source 3 to 50%. Ids follow the list, so run 'vm ls' first."
 
-HELP is one row per thing the user can do: the exact words to type, then a short description. Put the most common action first. Keep it to about six rows. TIP is optional: one line with an example, or the one thing that most often goes wrong. app.py draws the block, so pages never print their own intro. A page without HELP shows its USAGE line instead.
+HELP is one row per thing the user can do: the exact words to type, then a short description. Put
+the most common action first, since settings.py shows the first row as "START WITH". Keep it to about
+six rows. TIP is optional: one line with an example, or the one thing that most often goes wrong.
+app.py draws the block, so pages never print their own intro. A page without HELP shows its USAGE
+line instead.
 
-RUN_ALONE = True is the one exception to "a name alone shows the intro". Only settings sets it, because typing "settings" is the whole command. Do not set it on a page that changes something: a stray name would run it.
+A page with many settings (wifi) groups its rows under short headings rather than cutting them. A row
+with an empty syntax, such as ("", "known networks"), is a heading. The five or six everyday actions
+still come first, before any heading, so the intro reads like a small page until you look further.
+
+RUN_ALONE = True means typing the name alone runs the page instead of showing the intro. settings,
+location and regedit set it, because the name alone is a useful command and changes nothing. Never
+set it on a page where the name alone would change something.
 
 3. One entry point. run(args) gets the words after the name and returns an exit code:
 
 0 success
-1 system or device error
+1 system or device error, including "needs administrator rights"
 2 bad usage
-app.py handles empty args and help words before run() is called. run() still handles them too, so the file works when run directly. Catch your own error class in run(), print it to stderr as error: ..., and return its code.
 
-4. Subcommands use the same words everywhere.
+app.py handles a bare name and help words before run() is called. run() still handles them too, so
+the file also works as "py page.py ...". Each page has its own error class with a code. run() catches
+it, prints "error: ..." to stderr and returns the code. Pages built on _net.py also catch
+_net.NetError.
+
+4. Flags for agents. run() starts with:
+
+    args, options = _core.split_flags(args)    # options["json"], options["yes"]
+
+--json makes a reading command print plain data with the same keys every time (no colour, no prose).
+--yes answers a confirmation in advance. An agent passes it only after the person has agreed to that
+change. wifi, ethernet and hotspot do this. location has its own flags (--json, --override-management).
+volume, brightness, startup, apps and process do not support --json yet.
+
+======================================================================
+SHARED CODE (read these instead of rewriting them)
+======================================================================
+
+_core.py
+  registry(), unique_settings()   every page, by name and alias / each page once
+  page_help(module)               the blue intro, from HELP and TIP
+  split_flags(args)               (args without --json/--yes, {"json": bool, "yes": bool})
+  confirm(question, yes)          y/N; --yes answers it; no one answering counts as no
+  print_json(data)                JSON out (datetimes become text)
+  is_admin()                      whether the terminal is elevated
+  HELP_WORDS, BLUE, RESET
+
+_net.py
+  adapters("wifi" | "ethernet")   real adapters (not virtual), connected first, numbered from 1
+  refresh(adapter)                the same adapter, read again after a change
+  info_data / info_sections       ipconfig-style data, and the sections 'info' draws from it
+  render(title, sections)         draws [(heading, [(label, value), ...]), ...], one colour per section
+  show(value), public(dict)       a value as text; a dict without its "_private" keys, for JSON
+  adapter_command(word, rest, adapter, options, prefix)
+                                  ip, dns, share and features for any adapter (words in ADAPTER_WORDS)
+  tcpip(adapter)                  IP/DNS assignment and DHCP lease, from the TCP/IP registry keys
+  run_tool, tool_ok, explain      run netsh/sc/netcfg; turn their output into a short reason
+  need_admin(), on_off(word, example), reg_read(path, name)
+  service_state(name), restart_service(name)
+  ethernet_metered / set_ethernet_metered, sharing_state, home_choices, features
+  export_xml, add_xml, onex_summary, with_cache, with_method, auth_rows    802.1X profiles
+
+======================================================================
+RULES
+======================================================================
+
+5. Subcommands use the same words everywhere.
 
 Listing: ls or list
 Removing: rm, remove, delete, uninstall, del
 Toggling: on/enable, off/disable
 Show or set one item: <id> shows it, <id> <value> sets it
+A setting name alone after the page shows what it is now and how to change it (wifi dns, eth auth).
 Accept the long and short forms in every page. The README says the same thing.
 
-5. Ids come from one function. Build the list in one function, sort it alphabetically, number it from 1, and use that same function for both the listing and the action. This keeps ls and the action in agreement. Tell the user that ids can shift when the list changes.
+6. Ids come from one function. Build the list in one function, sort it alphabetically, number it
+from 1, and use that same function for the listing and the action, so they always agree. Tell the
+user that ids can shift when the list changes. Where you can, also accept a stable name (wifi
+features ipv6, not only wifi features 6), because names do not shift and agents can rely on them.
 
-6. Output.
+7. Output.
 
-Listings use one line per item, with an id and a name, and are coloured per row. Use os.system("") once to enable colour in the Windows console.
-For long lists, print down each column and then start the next one, using the terminal width from shutil.get_terminal_size().
+Listings use one line per item, with an id and a name, and are coloured per row. Call os.system("")
+once to turn colour on in the Windows console.
+Long details (wifi info, eth info, hs status) are sections, each in its own colour, through
+_net.render. Use the same palette as process.py: cyan, green, yellow, magenta, blue. In lists, green
+means on or connected, grey means off, and red means not installed or a protected system item.
+For long lists, print down each column and then start the next one, using the terminal width from
+shutil.get_terminal_size().
 Print results on one line, such as Discord: 90%.
+Show what the person needs next. If a value explains a common problem, say so next to it, as eth
+info does with a 169.254 address: "self-assigned: no DHCP server answered".
 
-7. Changes that can't be undone need a confirmation. Ask before acting, say what will happen, and treat anything other than y or yes as no. Say what to expect, for example "expect a prompt or a window from the uninstaller."
+8. Check before you announce. If a change needs administrator rights, check that first (need_admin
+or is_admin), so the page never says "turning X off..." and then fails. Check bad words and bad
+values before the admin check too, so bad usage gets exit code 2 and a usage line.
 
-8. Prefer reversible changes. Change a switch or a value rather than deleting something. startup turns apps off by changing Windows' approval entry, so nothing is lost.
+9. Say what to expect, then do it, then read it back. Print one line before a change ("expect a short
+drop while it asks the router"). After it, read the setting back from Windows and report what it is
+now, not what you meant to write (as JSON with --json). If the change applies later (next sign-in,
+next hotspot start), say so.
 
-9. Use Python first, PowerShell second.
+10. Confirmations. Ask before anything that can't be undone, say what will happen, and treat
+anything other than y or yes as no. Also ask before a change that can be undone but can cut the
+person off: a manual IP address, turning IPv4 off, sharing a connection (which replaces the other
+adapter's IP). Put the undo command in the question. A wrong value can leave the person, or the
+agent, without the connection they need to fix it. Always use _core.confirm(question, options["yes"]).
 
-Use winreg, ctypes or a package such as pycaw where possible.
-Use PowerShell only when no Python route exists, and fall back to it only for that part.
-Add any new package to requirements.txt.
+11. Prefer reversible changes. Change a switch or a value rather than deleting something. startup
+turns apps off by changing Windows' approval entry, so nothing is lost.
 
-10. Test without side effects. Set a value to the value it already has, answer "n" to confirmations, and check bad ids and bad words. Only try a real change when you can put it back. Check the intro too: type the setting name alone and read it as a new user would.
+12. Python first, then Windows' own tools, then PowerShell.
 
-11. Register the page.
+Use winreg, ctypes, comtypes (COM and WMI) or a package such as pycaw or winrt where possible.
+Use netsh, sc or netcfg when they are the documented way (wifi, 802.1X, network features).
+Use PowerShell only when there is no other route, and only for that part.
+Add any new package to requirements.txt and install it.
 
-Add a row to the README table with the names and a one-line description.
-Check that no alias matches another page's name. Two pages with the same alias silently override each other, and nothing warns you.
-The settings page lists every page on its own, so a new page appears there with no edit. Its number and the START WITH column come from the page's NAME, ALIASES, SUMMARY and the first row of HELP, so fill those in carefully.
+13. Never guess at hidden settings. When Windows has no API or documented setting for something,
+do not write registry bytes you have not seen documented. Open the exact Settings page with
+os.startfile("ms-settings:...") and say what to choose there. The hotspot's "Share over" works
+this way. Never get around Windows' permissions or an organisation's policy without the person's
+explicit say-so (see location's --override-management).
 
-12. Make it easy for a person, not just a script. Before you finish a page, ask: if someone types "settings" and finds this line, would the next step be obvious? The first HELP row should be the thing they most likely want. The SUMMARY should say what they get, in under about 60 characters, because it is the only text they read in the list.
+14. Make it easy for a person, not just a script. Before you finish a page, ask: if someone types
+"settings" and finds this line, would the next step be obvious? The first HELP row should be the
+thing they most likely want.
 
-What each setting is for
+15. Interactive pages (like regedit) read their own lines, and must not rely on the console's
+shlex.split. shlex treats a backslash as an escape, so HKLM\SOFTWARE arrives as HKLMSOFTWARE. Such a
+page splits its own lines, keeping backslashes and honouring quotes, as regedit.py's _tokens does.
 
-These describe what the user wants from each page. Each intro should lead with the thing that setting is most often used for.
+======================================================================
+TESTING (without side effects)
+======================================================================
+
+- Read everything first: run each reading command, with and without --json, and compare with what
+  Windows shows (ipconfig in PowerShell, Settings, netsh).
+- Write the value it already has: name to the same name, a switch to the state it is in. Some
+  Windows writes may leave a trace even then (re-writing a Wi-Fi profile's cost can change its
+  "Cost Source" from Default to User), so prefer switches where re-writing is truly the same.
+- Answer "n" to confirmations (echo n | py app.py ...) and check that nothing changed afterwards.
+- Check bad ids, bad words and bad values, and look at the exit codes (2 for bad usage).
+- Without administrator rights, check that every admin-only change refuses before announcing anything.
+- Only make a real change when you can put it back straight away (hotspot on, then off).
+- Test the pure parts directly: parsers, XML edits, table building. Import the page or _net.py from
+  a scratch script.
+- Read the intro: type the setting name alone and read it as a new user would. Check that it
+  appears correctly in "settings".
+- Run every page's intro once after changing _core.py, since every page uses it.
+- Compile everything: for f in *.py; do py -m py_compile "$f"; done
+
+======================================================================
+FINISHING
+======================================================================
+
+- README.md: a row in the Commands table, and a section with the commands as a code block and a few
+  plain sentences on what needs administrator rights and what can't be undone.
+- This file: an entry under "What each setting is for", and anything you learned under WINDOWS LESSONS
+  or OPEN ISSUES.
+- Check that no alias matches another page's name or alias. Two pages with the same alias silently
+  override each other, and nothing warns you.
+- The settings list picks the page up by itself, from NAME, ALIASES, SUMMARY and the first HELP row.
+- Restore the bytecode (git checkout -- __pycache__/) and delete new untracked .pyc files.
+- Do not commit or push unless asked.
+
+======================================================================
+WINDOWS LESSONS (learned the hard way; add to this)
+======================================================================
+
+Wi-Fi and netsh
+- netsh output is in the OEM code page: run it with encoding="oem".
+- "netsh wlan show networks" needs Location on for apps, or Windows hides the names. "show
+  interfaces" and "show profiles" work without it.
+- netsh wlan set randomization and set profileparameter worked without administrator rights here.
+- Saved profiles show as "All User Profile" or "Current User Profile"; match on "user profile".
+
+Adapters and IP
+- GetAdaptersAddresses (ctypes, in _net.py) is what ipconfig uses, and takes about 10 ms.
+- Real adapters are told apart from virtual ones by PnPInstanceId (PCI\, USB\, SD\) under the
+  network class key. Bluetooth PAN, Hyper-V, VirtualBox and Wi-Fi Direct adapters are virtual.
+- IPv6 SuffixOrigin 5 (random) is what ipconfig calls a "Temporary IPv6 Address".
+- DHCP lease times, the DHCP server and manually set DNS servers (NameServer) are in
+  HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{GUID}, readable without admin.
+- Metered Ethernet is HKLM\SOFTWARE\Microsoft\DusmSvc\Profiles\{adapter GUID}\*\UserCost (2 = metered,
+  0 = not), applied by restarting DusmSvc. Not yet verified with a live toggle.
+
+COM and WMI (comtypes)
+- WMI rows from comtypes need row.Properties_("Name").Value, not row.Name.
+- Network features (bindings) are MSFT_NetAdapterBindingSettingData in root\StandardCimv2, changed
+  with row.ExecMethod_("Enable" | "Disable").
+- HNetCfg.HNetShare (connection sharing) refuses even to list connections without admin. Read the
+  sharing state from root\Microsoft\HomeNet (HNet_ConnectionProperties) instead.
+- netcfg -s n lists installed network components without admin; installing (-c p|s|c -i id) and
+  uninstalling (-u id) need it.
+
+WinRT (pywinrt)
+- Install each namespace as its own package (winrt-Windows.Networking.NetworkOperators and so on).
+  Objects from a namespace whose package is missing can't be read.
+- Await async calls with asyncio.run. Enums are Python enums (.name, Enum["NAME"]).
+- The mobile hotspot API (NetworkOperatorTetheringManager) needs no admin. Windows has no API for the
+  hotspot's "Share over" (Wi-Fi or Bluetooth), and it does not report the hotspot's live channel.
+
+Registry and policy
+- HKLM\SOFTWARE\Microsoft\Enrollments always has "Local Authority", "Cloud Authority" and "Deploy
+  Authority" entries. They are Windows' own, not device management. Only other providers mean an
+  organisation manages the PC.
+- Reading HKLM\...\NetworkList\Profiles needs admin.
+- Group Policy and device management can set a policy back at the next refresh, so say so whenever
+  a page changes a policy value.
+
+======================================================================
+OPEN ISSUES (things a future prompt may be about)
+======================================================================
+
+- Not yet verified from an administrator terminal: changing IP and DNS, connection sharing, features
+  on/off/install/uninstall, metered Ethernet, Ethernet 802.1X, and lc on/off. Wi-Fi 802.1X changes
+  also need a work or school network to test against. The 802.1X method templates (PEAP,
+  certificate, TTLS) in _net.py are untested.
+- volume, brightness, startup, apps and process have no --json or --yes yet. Adding them means
+  split_flags in run(), print_json for listings, and _core.confirm in place of their own prompts.
+- location.py predates _core's helpers and has its own is_admin and flag handling.
+- app.py's console uses shlex.split, which eats backslashes for every page except regedit.
+- Piping the console's output without PYTHONIOENCODING=utf-8 crashes on the banner.
+- __pycache__ is tracked in git, and there is no .gitignore.
+- Connection sharing's "Allow other network users to control or disable the shared connection" is
+  not implemented: no documented setting was found.
+- IP manual mode is IPv4 only. DNS takes IPv4 and IPv6 servers. DNS over HTTPS is not covered.
+
+======================================================================
+WHAT EACH SETTING IS FOR
+======================================================================
+
+These describe what the user wants from each page. Each intro should lead with the thing that
+setting is most often used for. New pages follow the same order: the most common action first, the
+risky one last with its warning, and a TIP that heads off the first thing that goes wrong.
 
 settings (menu): The front door. Someone who does not know the commands types "settings" and sees every setting in one numbered, blue list, with what each does and the first command to type. They can then type a number or a name at the prompt to open a setting's intro. It should always be the easiest thing to find, so every new page has to show up here with a clear SUMMARY.
 
@@ -85,6 +344,12 @@ apps (app): Find an installed app and uninstall it, with the same list you would
 
 process (prc): Find what is using the CPU or memory and end it. The intro leads with prc ls, then prc ls /verbose for live numbers, then prc kill last, with the warning that unsaved work is lost. Red rows are Windows system programs, and the TIP says so.
 
-wifi (net, internet, wf): Getting online quickly. The most common path is wifi on, which joins the best saved network. For a new network it is wifi ls, then wifi <id> on, which asks for the password. The intro leads with on and status, and rm is last. The TIP says to run wifi ls first, and it should mention that Windows needs Location on to show network names.
+wifi (net, internet, wf): Getting online quickly, then everything Settings has for Wi-Fi. The most common path is wifi on, which joins the best saved network. For a new network it is wifi ls, then wifi <id> on, which asks for the password. wifi info is the readable ipconfig: the radio (band, channel, signal, speed), then the addresses, then the settings, each section in its own colour. Known networks (wifi known) are every saved profile, in range or not, with forget, auto-connect, metered and random-address switches each. The settings group covers ip, dns, metered, random hardware addresses, 802.1X (wifi auth, which explains that it only applies to work and school networks), sharing and features, then the hotspot. The intro leads with the everyday actions and puts the settings under headings. The TIP says to run wifi ls first, and it should mention that Windows needs Location on to show network names.
 
-New pages should follow the same order: the most common action first, the risky one last with its warning, and a TIP that heads off the first thing that goes wrong.
+ethernet (eth, lan, wired): The wired connection, the same as Settings > Ethernet and the adapter's Properties. It leads with eth info, which flags a self-assigned 169.254 address as "no DHCP server answered", the usual reason a cable "has no internet". Then ip, dns, metered (written where Settings keeps it, under DusmSvc, and the Data Usage service is restarted so it applies), 802.1X (eth auth: on starts Wired AutoConfig and sets it to start with Windows; method, who signs in, remember credentials, fallback and single sign-on), sharing and features. If a PC has more than one wired adapter, eth ls numbers them and eth <id> <command> picks one.
+
+hotspot (hs, mobilehotspot): Share this PC's internet, the same as Settings > Mobile hotspot. hs on turns it on and shows what another device needs: the name, password, band and security. Name, password (typed hidden, twice), band and security can be changed in one command each, and the page says that changes made while it is on apply at the next start. hs from lists the connections that can be shared, and hs on <id> shares one. 'Share over' (Wi-Fi or Bluetooth) has no API, so hs over opens the Settings page at that choice and says so. wifi hotspot ... goes to the same page.
+
+location (lc): The place to see and change everything about location. Typing lc on its own lists every location setting with what it is set to now, and a plain-words explanation of each one. lc why says why location is off or blocked and what would fix it, and with --json it is the first thing an agent should run for a location problem. Location services is the master switch for the whole PC; lc off sets the same Windows policy as gpedit's "Turn off location", and lc on puts it back. If an organisation's policy is what turned it off, lc on refuses and explains, and only lc on --override-management (after the owner agrees) overrides it. Access for apps and the per-app switches come next, then the 7-day list of apps that used location, then the override. The intro should say that the admin-only switch is the one that needs an administrator terminal.
+
+regedit: An interactive Registry Editor, for people who want to look inside Windows and not just flip switches. Typing regedit opens its own prompt, with the path shown in it, and the editor keeps control until the user types exit or 0. It lists the root hives as numbers, and a number opens an item. Its commands are the usual ones: ls, cd, get, add, set, rm, mkdir, rmdir. Destructive steps ask first, and deleting a key with anything under it means typing its name. It never deletes a hive or one of its top two levels, and it never gets around Windows' permissions.
