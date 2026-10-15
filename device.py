@@ -1,0 +1,560 @@
+"""
+device: Windows devices, the same list Device Manager shows. Routed from app.py ("device" or "dvc").
+
+    device ls [class <name>] [mfg <text>] [working|disabled|problem|absent|present] [sort name|class|state] [page <n>]
+    device <id>                  show one device: what it is, its driver, what it is connected to, its status
+    device errors                devices with problems, disabled devices and missing drivers
+    device drivers [<id>]        driver packages: provider, version, date and file, or one device's driver
+    device tree [all]            devices by what they are plugged into (all adds the ones not connected)
+    device search <text>         find by name, class, hardware ID, vendor or driver provider
+    device usb|displays|audio|storage
+                                 the devices in one area
+    device report                the whole inventory as JSON, for scripts and agents
+
+Nothing here needs administrator rights. Connected devices are read through the Configuration Manager
+API (cfgmgr32), the same calls Device Manager makes. Devices that are not connected are read from the
+Enum registry key, because the API cannot locate them. Driver packages come from WMI.
+"""
+
+import ctypes
+import math
+import os
+import re
+import sys
+from collections import defaultdict
+
+import _core
+import _net
+
+# ======================================================================
+# SETTING INFO — read by app.py to list and route this setting
+# ======================================================================
+NAME = "device"
+ALIASES = ["dvc"]
+SUMMARY = "Devices, their status and drivers (Device Manager)"
+USAGE = "device ls | device <id> | device errors | device drivers | device tree | device search <text>"
+HELP = [
+    ("device ls", "list every device with its id, state and class"),
+    ("device <id>", "show one device: its driver, what it plugs into, and its status"),
+    ("device errors", "devices with problems, disabled devices and missing drivers"),
+    ("device drivers", "driver packages: provider, version, date and file"),
+    ("device tree", "devices by what they are plugged into"),
+    ("device search <text>", "find by name, class, hardware ID, vendor or driver provider"),
+]
+TIP = (
+    "Ids are numbered by name, so they shift when devices come and go. A name works too. "
+    "Run 'device ls' first. Reading needs no administrator rights."
+)
+
+# ======================================================================
+# CONSTANTS — the Configuration Manager (cfgmgr32) values this page uses
+# ======================================================================
+CFG = ctypes.windll.cfgmgr32
+CR_SUCCESS = 0
+FILTER_PRESENT = 0x100  # CM_GETIDLIST_FILTER_PRESENT: only devices that are connected now
+ENUM_KEY = r"SYSTEM\CurrentControlSet\Enum"
+DRIVER_STORE = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "DriverStore", "FileRepository")
+# CM_DRP_* registry property codes, and the matching value names in the Enum key
+CM_DRP = {"desc": 1, "hardware": 2, "compatible": 3, "service": 5, "class": 8, "driver": 0xA,
+          "manufacturer": 0xC, "friendly": 0xD, "location": 0xE}
+MULTI_TEXT = {"hardware", "compatible"}
+ENUM_NAMES = {"desc": "DeviceDesc", "hardware": "HardwareID", "compatible": "CompatibleIDs", "service": "Service",
+              "class": "Class", "driver": "Driver", "manufacturer": "Mfg", "friendly": "FriendlyName",
+              "location": "LocationInformation"}
+DISABLED_CODES = (22, 29)  # 22: turned off in Device Manager; 29: turned off in the firmware
+MISSING_DRIVER = 28
+# Plain words for the problem codes Windows reports (the CM_PROB_* numbers)
+PROBLEM_TEXT = {
+    1: "not set up correctly", 3: "Windows ran out of memory for it", 10: "Windows could not start it",
+    12: "it needs resources another device is using", 14: "it needs a restart to finish",
+    18: "its drivers need reinstalling", 19: "its registry settings are damaged",
+    22: "turned off (disabled)", 24: "not working, or not there", 28: "no driver is installed",
+    29: "turned off in the firmware", 31: "Windows cannot load its driver", 37: "its driver failed to start",
+    39: "its driver is missing or damaged", 43: "a driver reported a problem and stopped it",
+    45: "not connected right now", 48: "its driver is blocked", 52: "its driver is not signed",
+}
+STATE_COLORS = {"working": _net.GREEN, "disabled": _net.GREY, "problem": _net.RED, "not connected": _net.GREY}
+STATE_WORDS = {"working": "working", "disabled": "disabled", "problem": "problem", "problems": "problem",
+               "absent": "not connected", "disconnected": "not connected"}
+SORTS = ("name", "class", "state")
+AREAS = {  # the classes each area shows; USB also takes anything on the USB bus
+    "usb": {"USB", "USBDEVICE"},
+    "displays": {"DISPLAY", "MONITOR"},
+    "audio": {"AUDIOENDPOINT", "MEDIA", "SOUND"},
+    "storage": {"DISKDRIVE", "SCSIADAPTER", "HDC", "VOLUME"},
+}
+PAGE = 40  # rows per page in the listings
+
+
+class DeviceError(Exception):
+    """An error with an exit code: 1 for system errors, 2 for bad usage."""
+
+    def __init__(self, message, code=1):
+        super().__init__(message)
+        self.code = code
+
+
+# ======================================================================
+# READING — the Configuration Manager API, and the Enum registry key for unplugged devices
+# ======================================================================
+def _id_list(flags):
+    """Instance IDs of every device with these flags (0 for all, FILTER_PRESENT for connected ones)."""
+    length = ctypes.c_ulong()
+    CFG.CM_Get_Device_ID_List_SizeW(ctypes.byref(length), None, flags)
+    buffer = ctypes.create_unicode_buffer(length.value)
+    CFG.CM_Get_Device_ID_ListW(None, buffer, length.value, flags)
+    return [item for item in buffer[:].split("\x00") if item]
+
+
+def _cm_id(devinst):
+    buffer = ctypes.create_unicode_buffer(256)
+    if CFG.CM_Get_Device_IDW(devinst, buffer, 256, 0) != CR_SUCCESS:
+        return None
+    return buffer.value
+
+
+def _cm_text(devinst, prop, multi):
+    """A registry-style property of a connected device. Multi-text values come back as a list."""
+    size = ctypes.c_ulong(16384)
+    kind = ctypes.c_ulong()
+    buffer = ctypes.create_string_buffer(size.value)
+    if CFG.CM_Get_DevNode_Registry_PropertyW(devinst, prop, ctypes.byref(kind), buffer, ctypes.byref(size), 0) != CR_SUCCESS:
+        return None
+    parts = [part for part in buffer.raw[:size.value].decode("utf-16-le", errors="replace").split("\x00") if part]
+    if multi:
+        return parts
+    return parts[0] if parts else None
+
+
+def _plain(text):
+    """Windows stores some names as '@file.inf,%key%;Plain text'. The plain text is after the ';'."""
+    if isinstance(text, str) and text.startswith("@") and ";" in text:
+        return text.split(";", 1)[1]
+    return text
+
+
+def _read(instance_id, connected):
+    """One device, as a dict. Connected devices come from the API; the rest from the Enum key."""
+    row = {"instance_id": instance_id, "present": connected, "problem": 0, "parent": None}
+    devinst = ctypes.c_ulong()
+    if connected and CFG.CM_Locate_DevNodeW(ctypes.byref(devinst), instance_id, 0) == CR_SUCCESS:
+        status, problem = ctypes.c_ulong(), ctypes.c_ulong()
+        CFG.CM_Get_DevNode_Status(ctypes.byref(status), ctypes.byref(problem), devinst, 0)
+        row["problem"] = problem.value
+        parent = ctypes.c_ulong()
+        if CFG.CM_Get_Parent(ctypes.byref(parent), devinst, 0) == CR_SUCCESS:
+            row["parent"] = _cm_id(parent.value)
+        for key, prop in CM_DRP.items():
+            row[key] = _cm_text(devinst, prop, key in MULTI_TEXT)
+    else:
+        row["present"] = False
+        path = f"{ENUM_KEY}\\{instance_id}"
+        for key, value in ENUM_NAMES.items():
+            row[key] = _net.reg_read(path, value)
+    row["desc"], row["friendly"] = _plain(row["desc"]), _plain(row["friendly"])
+    row["manufacturer"] = _plain(row["manufacturer"])
+    row["name"] = (row["friendly"] or row["desc"] or instance_id).strip()
+    row["hardware"], row["compatible"] = row["hardware"] or [], row["compatible"] or []
+    row["bus"] = instance_id.split("\\", 1)[0].upper()
+    row["state"] = _state(row)
+    row["problem_text"] = PROBLEM_TEXT.get(row["problem"], f"problem code {row['problem']}") if row["problem"] else None
+    return row
+
+
+def _state(row):
+    if not row["present"]:
+        return "not connected"
+    if row["problem"] == 0:
+        return "working"
+    if row["problem"] in DISABLED_CODES:
+        return "disabled"
+    return "problem"
+
+
+def _devices():
+    """Every device Windows knows about, sorted by name and numbered from 1. The list and the ids both come
+    from here, so they always agree."""
+    connected = {item.upper() for item in _id_list(FILTER_PRESENT)}
+    rows = [_read(item, item.upper() in connected) for item in _id_list(0)]
+    rows.sort(key=lambda row: row["name"].lower())
+    for number, row in enumerate(rows, start=1):
+        row["id"] = number
+        row["class"] = row["class"] or None
+    return rows
+
+
+def _driver_date(text):
+    """WMI dates look like 20240131000000.000000+000; show them as 2024-01-31."""
+    if not text or len(text) < 8:
+        return None
+    return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+
+
+def _driver_packages():
+    """{device instance ID in upper case: the driver Windows has installed for it}, from WMI."""
+    found = {}
+    wmi = _net._wmi("root\\cimv2")
+    for row in wmi.ExecQuery("SELECT DeviceID, DriverProviderName, DriverVersion, DriverDate, InfName, Signer "
+                             "FROM Win32_PnPSignedDriver"):
+        device_id = _net._prop(row, "DeviceID")
+        if device_id:
+            found[device_id.upper()] = {
+                "provider": _net._prop(row, "DriverProviderName"),
+                "version": _net._prop(row, "DriverVersion"),
+                "date": _driver_date(_net._prop(row, "DriverDate")),
+                "inf": _net._prop(row, "InfName"),
+                "signer": _net._prop(row, "Signer"),
+            }
+    return found
+
+
+def _driver_store():
+    """How many driver packages are in the driver store, or None if it cannot be read."""
+    try:
+        return len(os.listdir(DRIVER_STORE))
+    except OSError:
+        return None
+
+
+# ======================================================================
+# FINDING — one device by id or name
+# ======================================================================
+def _find(word, rows):
+    if word.isdigit():
+        for row in rows:
+            if row["id"] == int(word):
+                return row
+        raise DeviceError(f"no device with id {word}. Run 'device ls' to see them.", 2)
+    lowered = word.lower()
+    for row in rows:
+        if row["name"].lower() == lowered or row["instance_id"].lower() == lowered:
+            return row
+    raise DeviceError(f"no device called {word}. Run 'device ls' to see them, or use its id.", 2)
+
+
+def _brief(row):
+    return {
+        "id": row["id"], "name": row["name"], "class": row["class"], "manufacturer": row["manufacturer"],
+        "instance_id": row["instance_id"], "state": row["state"], "present": row["present"],
+        "problem": row["problem"] or None, "problem_text": row["problem_text"],
+    }
+
+
+def _row_text(row):
+    color = STATE_COLORS.get(row["state"], _net.YELLOW)
+    return color + f"{row['id']:<6}{row['name'][:36]:<38}{(row['class'] or '-')[:18]:<20}{row['state']}" + _net.RESET
+
+
+ROW_HEADER = f"{'ID':<6}{'NAME':<38}{'CLASS':<20}STATE"
+
+
+# ======================================================================
+# COMMANDS — app.py calls run(args) with everything after "device"/"dvc"
+# ======================================================================
+def _list_options(words):
+    options = {"class": None, "mfg": None, "state": None, "present": None, "sort": "name", "page": 1}
+    i = 0
+    while i < len(words):
+        word = words[i].lower()
+        value = words[i + 1] if i + 1 < len(words) else None
+        if word == "class" and value:
+            options["class"] = value.lower()
+        elif word in ("mfg", "manufacturer") and value:
+            options["mfg"] = value.lower()
+        elif word == "sort" and value and value.lower() in SORTS:
+            options["sort"] = value.lower()
+        elif word == "page" and value and value.isdigit() and int(value) >= 1:
+            options["page"] = int(value)
+        elif word in STATE_WORDS:
+            options["state"] = STATE_WORDS[word]
+            i += 1
+            continue
+        elif word in ("present", "connected"):
+            options["present"] = True
+            i += 1
+            continue
+        else:
+            raise DeviceError("usage: device ls [class <name>] [mfg <text>] [working|disabled|problem|absent|present] "
+                              "[sort name|class|state] [page <n>]", 2)
+        i += 2
+    return options
+
+
+def _matches(row, options):
+    if options["class"] and (row["class"] or "").lower() != options["class"]:
+        return False
+    if options["mfg"] and options["mfg"] not in (row["manufacturer"] or "").lower():
+        return False
+    if options["state"] and row["state"] != options["state"]:
+        return False
+    if options["present"] and not row["present"]:
+        return False
+    return True
+
+
+def _list(words, options):
+    settings = _list_options(words)
+    found = [row for row in _devices() if _matches(row, settings)]
+    keys = {"name": lambda row: row["name"].lower(),
+            "class": lambda row: ((row["class"] or "").lower(), row["name"].lower()),
+            "state": lambda row: (row["state"], row["name"].lower())}
+    found.sort(key=keys[settings["sort"]])
+    pages = max(1, math.ceil(len(found) / PAGE))
+    if settings["page"] > pages:
+        raise DeviceError(f"there are only {pages} page(s) of devices", 2)
+    start = (settings["page"] - 1) * PAGE
+    shown = found[start:start + PAGE]
+    if options["json"]:
+        _core.print_json({"page": settings["page"], "pages": pages, "total": len(found),
+                          "devices": [_brief(row) for row in shown]})
+        return
+    print(ROW_HEADER)
+    for row in shown:
+        print(_row_text(row))
+    print(f"\npage {settings['page']} of {pages}, {len(found)} device(s)."
+          + (f" 'device ls page {settings['page'] + 1}' for the next." if settings["page"] < pages else ""))
+
+
+def _inspect(word, rows, options):
+    row = _find(word, rows)
+    names = {r["instance_id"].upper(): r["name"] for r in rows}
+    parent = names.get((row["parent"] or "").upper())
+    children = [r["name"] for r in rows if (r["parent"] or "").upper() == row["instance_id"].upper()]
+    driver = _driver_packages().get(row["instance_id"].upper(), {})
+    if options["json"]:
+        _core.print_json({**_brief(row), "location": row["location"], "bus": row["bus"],
+                          "hardware_ids": row["hardware"], "compatible_ids": row["compatible"],
+                          "service": row["service"], "driver_key": row["driver"], "driver": driver or None,
+                          "parent": parent, "children": children})
+        return
+    _net.render(row["name"], [
+        ("identity", [
+            ("class", row["class"]), ("manufacturer", row["manufacturer"]),
+            ("instance ID", row["instance_id"]), ("bus", row["bus"]), ("location", row["location"]),
+        ]),
+        ("hardware IDs", [("hardware", row["hardware"]), ("compatible", row["compatible"])]),
+        ("driver", [
+            ("service", row["service"]), ("driver key", row["driver"]), ("provider", driver.get("provider")),
+            ("version", driver.get("version")), ("date", driver.get("date")), ("INF file", driver.get("inf")),
+            ("signer", driver.get("signer")),
+        ]),
+        ("connection", [("parent", parent), ("children", children)]),
+        ("status", [("state", row["state"]), ("problem", row["problem_text"])]),
+    ])
+
+
+def _errors(rows, options):
+    problems = [r for r in rows if r["state"] == "problem"]
+    disabled = [r for r in rows if r["state"] == "disabled"]
+    missing = [r for r in problems if r["problem"] == MISSING_DRIVER]
+    unknown = [r for r in problems if not r["class"]]
+    gone = [r for r in rows if r["state"] == "not connected"]
+    if options["json"]:
+        _core.print_json({
+            "problems": [_brief(r) for r in problems], "disabled": [_brief(r) for r in disabled],
+            "missing_drivers": [_brief(r) for r in missing], "unknown_devices": [_brief(r) for r in unknown],
+            "not_connected": len(gone),
+        })
+        return
+    if not problems and not disabled:
+        print(_net.GREEN + "no devices have problems or are disabled." + _net.RESET)
+    if problems:
+        print(_net.RED + "problem devices" + _net.RESET)
+        for row in problems:
+            print(_net.RED + f"  {row['id']:<6}{row['name'][:36]:<38}code {row['problem']}: {row['problem_text']}"
+                  + _net.RESET)
+    if disabled:
+        print(_net.GREY + "\ndisabled devices" + _net.RESET)
+        for row in disabled:
+            print(_net.GREY + f"  {row['id']:<6}{row['name'][:36]:<38}turn it on in Device Manager, or 'device {row['id']}'"
+                  + _net.RESET)
+    print(f"\nmissing drivers: {len(missing)}   unknown devices: {len(unknown)}   "
+          f"not connected right now: {len(gone)} (not an error; 'device ls absent' lists them)")
+
+
+def _drivers_cmd(words, options, rows):
+    packages = _driver_packages()
+    store = _driver_store()
+    if words:
+        if len(words) != 1:
+            raise DeviceError("usage: device drivers [<id>]", 2)
+        row = _find(words[0], rows)
+        driver = packages.get(row["instance_id"].upper(), {})
+        if options["json"]:
+            _core.print_json({"id": row["id"], "name": row["name"], "driver": driver or None,
+                              "driver_key": row["driver"], "driver_store_packages": store})
+            return
+        _net.render(row["name"], [
+            ("driver", [("provider", driver.get("provider")), ("version", driver.get("version")),
+                        ("date", driver.get("date")), ("INF file", driver.get("inf")),
+                        ("signer", driver.get("signer")), ("driver key", row["driver"])]),
+            ("driver store", [("packages in the store", store)]),
+        ])
+        return
+    listed = [row for row in rows if row["instance_id"].upper() in packages]
+    if options["json"]:
+        _core.print_json({"driver_store_packages": store, "devices": [
+            {**_brief(row), "driver": packages[row["instance_id"].upper()]} for row in listed]})
+        return
+    print(f"{'ID':<6}{'NAME':<38}{'CLASS':<20}{'PROVIDER':<14}{'VERSION':<16}DATE")
+    for row in listed:
+        driver = packages[row["instance_id"].upper()]
+        print(f"{row['id']:<6}{row['name'][:36]:<38}{(row['class'] or '-')[:18]:<20}"
+              f"{(driver['provider'] or '-')[:14]:<14}{(driver['version'] or '-')[:16]:<16}{driver['date'] or '-'}")
+    print(f"\n{len(listed)} device(s) have a driver. Driver store: {store if store is not None else 'not readable'} "
+          "package(s). 'device drivers <id>' shows one device's driver.")
+
+
+def _tree_text(row):
+    color = STATE_COLORS.get(row["state"], _net.YELLOW)
+    return color + f"{row['name']}  [{row['class'] or 'no class'}, {row['state']}]" + _net.RESET
+
+
+def _tree(rows, words):
+    if words and words[0].lower() != "all" or len(words) > 1:
+        raise DeviceError("usage: device tree [all]", 2)
+    show_all = bool(words)
+    shown = [row for row in rows if row["present"] or show_all]
+    keys = {row["instance_id"].upper() for row in shown}
+    children = defaultdict(list)
+    roots = []
+    for row in shown:
+        parent = (row["parent"] or "").upper()
+        if parent in keys:
+            children[parent].append(row)
+        else:
+            roots.append(row)
+    roots.sort(key=lambda row: not row["present"])  # connected devices first, then the ones not connected
+    lines = []
+
+    def walk(row, depth):
+        lines.append("  " * depth + _tree_text(row))
+        for child in children[row["instance_id"].upper()]:
+            walk(child, depth + 1)
+
+    for root in roots:
+        walk(root, 0)
+    print("\n".join(lines))
+
+
+def _in_area(row, area):
+    if (row["class"] or "").upper() in AREAS[area]:
+        return True
+    return area == "usb" and row["bus"] == "USB"
+
+
+def _area(area, rows, options):
+    found = [row for row in rows if _in_area(row, area)]
+    packages = _driver_packages() if area == "displays" else {}
+    names = {row["instance_id"].upper(): row["name"] for row in rows}
+    if options["json"]:
+        out = []
+        for row in found:
+            item = _brief(row)
+            if area == "usb":
+                item["vid_pid"] = _vid_pid(row["instance_id"])
+            if area == "displays":
+                item["driver_version"] = (packages.get(row["instance_id"].upper()) or {}).get("version")
+            if area == "storage":
+                item["controller"] = names.get((row["parent"] or "").upper())
+            out.append(item)
+        _core.print_json({"area": area, "devices": out})
+        return
+    print(f"{'ID':<6}{'NAME':<38}{'CLASS':<20}{'STATE':<16}DETAIL")
+    for row in found:
+        if area == "usb":
+            detail = _vid_pid(row["instance_id"]) or "-"
+        elif area == "displays":
+            detail = (packages.get(row["instance_id"].upper()) or {}).get("version") or "-"
+        elif area == "storage":
+            detail = names.get((row["parent"] or "").upper()) or "-"
+        else:
+            detail = row["manufacturer"] or "-"
+        color = STATE_COLORS.get(row["state"], _net.YELLOW)
+        print(color + f"{row['id']:<6}{row['name'][:36]:<38}{(row['class'] or '-')[:18]:<20}"
+              f"{row['state']:<16}{detail}" + _net.RESET)
+    if not found:
+        print(f"no {area} devices found")
+    notes = {"usb": "connection speed and power are not read yet.",
+             "displays": "resolutions and refresh rates are not read yet.",
+             "storage": "the detail column is the device each one is plugged into (its parent).",
+             "audio": "the detail column is the manufacturer."}
+    print(f"\n{len(found)} device(s). {notes[area]}")
+
+
+def _vid_pid(instance_id):
+    match = re.search(r"VID_([0-9A-F]{4}).*PID_([0-9A-F]{4})", instance_id.upper())
+    return f"{match.group(1)}:{match.group(2)}" if match else None
+
+
+def _search(words, rows):
+    if not words:
+        raise DeviceError("usage: device search <text>", 2)
+    text = " ".join(words).lower()
+    packages = _driver_packages()
+    found = []
+    for row in rows:
+        provider = (packages.get(row["instance_id"].upper()) or {}).get("provider") or ""
+        haystack = " ".join([row["name"], row["class"] or "", row["manufacturer"] or "", row["instance_id"],
+                             " ".join(row["hardware"]), " ".join(row["compatible"]), provider]).lower()
+        if text in haystack:
+            found.append(row)
+    if not found:
+        print(f"no device matches '{text}'")
+        return
+    print(ROW_HEADER)
+    for row in found:
+        print(_row_text(row))
+    print(f"\n{len(found)} device(s) match '{text}'.")
+
+
+def _report(rows):
+    packages = _driver_packages()
+    counts = {"total": len(rows)}
+    for state in ("working", "disabled", "problem", "not connected"):
+        counts[state.replace(" ", "_")] = sum(1 for row in rows if row["state"] == state)
+    _core.print_json({
+        "counts": counts,
+        "driver_store_packages": _driver_store(),
+        "devices": [{**_brief(row), "hardware_ids": row["hardware"], "driver": packages.get(row["instance_id"].upper())}
+                    for row in rows],
+    })
+
+
+def run(args):
+    """Run one device command; returns an exit code."""
+    os.system("")  # enables ANSI colour codes in the Windows console
+    args, options = _core.split_flags(args)
+    if not args or args[0].lower() in _core.HELP_WORDS:
+        print(f"usage: {USAGE}")
+        return 0
+    word, rest = args[0].lower(), args[1:]
+    try:
+        if word in _net.LIST_WORDS:
+            _list(rest, options)
+        elif word == "inspect" and len(rest) == 1:
+            _inspect(rest[0], _devices(), options)
+        elif word == "errors" and not rest:
+            _errors(_devices(), options)
+        elif word == "drivers":
+            _drivers_cmd(rest, options, _devices())
+        elif word == "tree":
+            _tree(_devices(), rest)
+        elif word == "search":
+            _search(rest, _devices())
+        elif word in AREAS and not rest:
+            _area(word, _devices(), options)
+        elif word == "report" and not rest:
+            _report(_devices())
+        elif len(args) == 1:
+            _inspect(args[0], _devices(), options)
+        else:
+            raise DeviceError(f"usage: {USAGE}", 2)
+        return 0
+    except (DeviceError, _net.NetError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return e.code
+
+
+if __name__ == "__main__":
+    sys.exit(run(sys.argv[1:]))

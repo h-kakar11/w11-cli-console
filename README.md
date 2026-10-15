@@ -24,6 +24,11 @@ py app.py
 | settings | `menu` | Every setting in one list, and how to open each |
 | location | `lc` | Location services, which apps can use it, and the override |
 | regedit | — | Interactive Windows Registry Editor |
+| services | `svc` | Windows services: list, search, status, dependencies, failures, start, stop, restart, startup type |
+| hardware | `hw` | Processor, graphics, memory, drives, motherboard, BIOS, USB, sensors, and a full report |
+| system | `sys` | Uptime, load, processes, startup programs, power, PATH, inventory, and an overall health check |
+| device | `dvc` | Devices and drivers, as in Device Manager: status, errors, tree, search |
+| events | `evt` | Windows event logs: errors, crashes, shutdowns, boots, timelines, export and watch |
 
 Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 
@@ -207,6 +212,126 @@ Registry HKCU\Control Panel> exit
 
 Commands: `ls`, `cd`, `pwd`, `get`, `add`, `set`, `rm`, `mkdir`, `rmdir`, `help`, `clear`, `exit`. Types are `sz`, `expand_sz`, `multi_sz` (items separated by `;`), `dword`, `qword` and `binary` (hex). Deleting asks first, and a key with anything under it needs its name typed. The top two levels of a hive can't be deleted. The editor uses Windows' own permissions, so changing `HKLM` needs an administrator terminal.
 
+### Services
+
+Type `svc` to list every Windows service with its id, state and startup type. Ids are numbered by name, so they shift when services are added or removed. A name works in place of an id.
+
+```
+svc ls                          list every service
+svc 12                          show one service
+svc search print                find services by name or display name
+svc status Spooler Dhcp         state, process id and last exit code
+svc failed                      set to start, but stopped with an error
+svc failures 3                  service failure events from the last 3 days
+svc stuck 20                    services still waiting to start or stop after 20 s
+svc deps 12 | dependents 12     what it needs, and what needs it
+svc tree 12                     the whole chain it waits for
+svc exe 12                      the program it runs, and whether that file is on disk
+svc triggers 12                 what starts it on demand
+svc permissions 12             who may control it (raw security descriptor)
+svc groups | accounts          services by load-order group, or by the account they run as
+svc delayed | disabled          services set to delayed start, or never to start
+svc 12 on                       start it
+svc Spooler off                 stop it (asks first)
+svc 12 restart                  stop and start it again
+svc 12 auto                     start with Windows
+svc 12 manual                   start only when something needs it
+svc 12 disabled                 never start it (asks first)
+```
+
+Listing, showing and every read-only view need no administrator rights. Starting, stopping, restarting and changing the startup type need an administrator terminal, and the page checks that before it announces anything. Stopping a service and setting one to disabled ask first. A stopped service can stop other programs from working until it starts again, and a disabled service stays off after a restart until it is set back to manual or auto. Setting it back undoes that.
+
+### Hardware
+
+Type `hw` to see what the PC is made of and how it is doing: processor, graphics, memory, drives, motherboard, BIOS, USB and PCI devices, battery and sensors. Readings that Windows keeps from ordinary users say "needs administrator rights". Nothing here changes the PC.
+
+```
+hw cpu | hw cpu usage 10          the processor, its cores and caches; live use
+hw cpu features | hw cpu topology  instruction sets, and cores, caches and NUMA nodes
+hw gpu | hw gpu memory             graphics cards, video memory, displays and drivers
+hw gpu processes | hw gpu errors   what uses the graphics card; graphics errors from the event log
+hw ram | hw ram modules | hw ram pressure 5   memory in use, the sticks, and when memory runs short
+hw ram test                        how to run Windows' memory test (it is not started here)
+hw storage | hw storage inspect 2 drives, one in full; the health and temperature of each
+hw storage performance 10 | hw storage errors 7   how busy the drives are; disk errors
+hw storage space C:\Users          what is using the space in a folder
+hw board | hw bios | hw firmware   motherboard, BIOS version and boot mode, and Secure Boot
+hw pci | hw usb | hw battery | hw fans | hw sensors   devices and sensors
+hw report                          everything above, as JSON
+```
+
+Health, temperature, BitLocker and failure prediction for the drives, and TPM details, need an administrator terminal. A desktop PC has no battery, and fan and temperature sensors depend on the board. Those readings say "not exposed on this PC" rather than failing.
+
+### System
+
+Type `sys` to see how Windows is running right now and whether anything needs attention.
+
+```
+sys health                      each check marked ok, warn or bad, with the reason
+sys load 10                     CPU, memory, disk and GPU busy time, sampled for 10 s
+sys load watch 120              watch for 2 minutes and list the moments that spiked, with the busiest process
+sys processes 15                the processes using the most CPU and memory
+sys uptime                      when Windows last started, and whether fast startup is on
+sys startup                     programs and scheduled tasks that start with Windows or at sign-in
+sys power                       the power plan, sleep and display timers, and sleep states
+sys battery                     power source and charge
+sys environment                 PATH entries that are duplicated, missing or refer to an unknown variable
+sys inventory                   hardware, Windows, drivers and installed programs
+```
+
+`sys health` reads the event logs for the last day and week, and flags drive space under 20%, memory under 10% free, a restart waiting to finish, devices with problems, blue screens, GPU and service failures. A service failure points to `svc failures`, and boot history is in `evt boot`.
+
+### Devices
+
+Type `dvc` to list every device Windows knows about, the same list as Device Manager, with its id, state and class. Ids are numbered by name, so they shift when devices come and go. A name works in place of an id.
+
+```
+dvc ls                          every device, 40 to a page
+dvc ls absent                   devices that are not connected right now
+dvc ls class display            one class (display, monitor, usb, audio endpoint and so on)
+dvc ls mfg advanced sort class  filter by manufacturer, and sort by class
+dvc 12                          one device: its driver, what it plugs into, its status
+dvc errors                      problem devices, disabled devices and missing drivers
+dvc drivers                     every driver package: provider, version, date, file
+dvc drivers 12                  one device's driver
+dvc tree                        connected devices, by what they are plugged into
+dvc search VID_1E71             find by name, class, hardware ID, vendor or driver provider
+dvc usb | displays | audio | storage
+dvc report                      the whole inventory as JSON, for scripts and agents
+```
+
+Nothing here needs administrator rights. "Disabled" means turned off in Device Manager, and "not connected" means the device is known to Windows but is not plugged in or present right now. Changing a device (enable, disable, restart, updating or removing a driver) is not built yet.
+
+### Event logs
+
+Type `evt` to see the commands. It reads the Windows event logs (the same logs as Event Viewer), and the answers keep the record number and provider of each event, so a result can be looked up again with `evt inspect`. Times can be `2h` (two hours ago), `3d`, `today`, or `2026-10-15 14:30`.
+
+```
+evt errors                      errors, critical events and warnings from the last day
+evt errors --level critical --source Kernel-PnP --since 3d
+evt recent 100 --oldest         the newest 100 events, shown oldest first
+evt search disk                 find text in messages, ids, providers and computer names
+evt inspect 4312 --log System   one event in full, with its fields and XML
+evt crashes                     application crashes, with the faulting module and exception code
+evt shutdowns                   clean and unexpected shutdowns, restarts and blue screens
+evt boot                        each boot, how the one before ended, and problems in its first 10 minutes
+evt drivers | evt services | evt network
+evt security --failed           failed sign-ins (the Security log)
+evt correlate --by process      group events by time, provider, id, process or activity
+evt timeline "2026-10-15 14:30" everything within 15 minutes of that moment
+evt frequency                   repeated errors, and spikes in them
+evt baseline save, then evt baseline
+evt filter --log System --id 7045 --user SYSTEM --since 7d --json
+evt export report.csv --since 1d
+evt watch --level error         print new errors as they happen (Ctrl+C stops)
+evt list providers              every log and the providers that write to it
+evt clear Application --backup Application.evtx
+```
+
+Most logs need no administrator rights. The Security log, and the Diagnostics-Performance log (which holds boot times), do: the page says so when it cannot read them. `evt clear` needs administrator rights and asks you to type the log's name. Clearing cannot be undone, so it wants a copy with `--backup` (or `--no-backup`). `--yes` does not skip it.
+
+Windows writes event messages in the language of the PC, and not every provider's message file is installed, so some messages are blank. The baseline is saved to `%LOCALAPPDATA%\w11-cli-console\events-baseline.json`, outside this folder.
+
 ## Adding a setting
 
 Create a `.py` file in this folder. `app.py` loads it automatically. It needs:
@@ -231,7 +356,8 @@ def run(args):             # args = words after the name
 - `_net.py`: code shared by the wifi and ethernet pages (adapter details, IP, DNS, sharing, features, 802.1X)
 - `intro.txt`: the banner shown when the console starts
 - `settings.py`: the `settings` list, which shows every setting
-- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`: settings
+- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`: settings
+- `_probe.py`: code shared by hardware and system (one PowerShell call per group of readings, the processor API, power status, tables)
 - `fashion.txt`: the pattern every new page follows, and what each setting is for
 - `brightness.ahk`: the older AutoHotkey version of brightness
 - `requirements.txt`: Python packages (`pycaw`, `psutil`, `comtypes`, and the `winrt` packages the hotspot uses)

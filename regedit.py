@@ -362,6 +362,8 @@ class Editor:
             try:
                 with winreg.OpenKey(handle, subpath, 0, winreg.KEY_READ):
                     pass
+            except FileNotFoundError:
+                raise RegeditError("that key does not exist: " + "\\".join(path))
             except OSError as error:
                 raise _os_error(error)
         return path

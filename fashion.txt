@@ -36,9 +36,11 @@ app.py           The console and the routing. You never edit it to add a page.
 _core.py         Shared by app.py and the pages (see SHARED CODE). Files starting with "_" are not
                  loaded as pages, so shared code always goes in one of these.
 _net.py          Shared network code for wifi and ethernet, and any future network page (VPN, proxy).
+_probe.py        Shared reading code for hardware and system: one PowerShell call per group of
+                 readings (probe, sample), the processor API, power status, powercfg, and table/emit.
 settings.py      The "settings" list. It reads every page itself, so never edit it to add one.
 volume.py, brightness.py, startup.py, apps.py, process.py, wifi.py, ethernet.py, hotspot.py,
-location.py, regedit.py
+location.py, regedit.py, services.py, device.py, events.py, hardware.py, system.py
                  The pages.
 intro.txt        The banner the console prints when it starts.
 README.md        For users: the table of settings and a section per setting.
@@ -53,6 +55,26 @@ Which file to copy:
 - a Windows Runtime (WinRT) API ................ hotspot.py
 - netsh, and many settings under headings ...... wifi.py
 - an interactive page with its own prompt ...... regedit.py
+- a list built from Windows' device API (ctypes, cfgmgr32) .. device.py
+- reading the Windows event logs (one PowerShell Get-WinEvent call per query) .. events.py
+- read-only reports on hardware or live load (no changes, shared readings) .. hardware.py, system.py
+- read-only views of a Windows service: sc queryex, registry for config .. services.py (the read-only section)
+
+LESSONS FROM hardware.py AND system.py
+- Readings that Windows gives ordinary users blank (SMART, BitLocker, TPM, thermal, failure prediction)
+  must say "needs administrator rights", not show "-". _probe.reason() maps the error text to that.
+- Put every PowerShell reading in one call, with each reading inside its own try (Get-Part in _probe.PRELUDE).
+  One refused reading then becomes an entry in "unavailable" rather than stopping the rest.
+- The processor API (GetLogicalProcessorInformation) has 32-byte entries: the detail union starts at
+  offset 16, not 12. The padding in _probe._Info is what keeps it right. Check it against a known value
+  (this PC: 32 KB L1 per core, 512 KB L2 per core, hyper-threading on all 16 cores).
+- GPU video memory: Win32_VideoController.AdapterRAM is 32-bit and wrong above 4 GB. Read
+  HardwareInformation.qwMemorySize under the display class key in the registry instead.
+- Performance counters count each logical processor as 100%. Divide by the count for a share of the whole PC
+  (sys processes does this and leaves the idle process out).
+- "% Processor Performance" and "Processor Frequency" can disagree on some AMD chips: say which one a
+  number came from, and label estimates as estimates.
+- Get-Tpm returns blank fields without administrator rights; a blank is not a missing TPM.
 
 ======================================================================
 ENVIRONMENT (this PC, as last seen)
@@ -306,14 +328,77 @@ Registry and policy
 - Group Policy and device management can set a policy back at the next refresh, so say so whenever
   a page changes a policy value.
 
+Services (sc)
+- "sc query type= service state= all" lists every service, with SERVICE_NAME, DISPLAY_NAME and STATE.
+  Slashes and "=" can be mangled by Git Bash, so call sc from PowerShell or Python.
+- A service's startup type is the Start value under HKLM\SYSTEM\CurrentControlSet\Services\{name}:
+  2 auto, 3 manual, 4 disabled (DelayedAutostart = 1 means auto, delayed). Readable without admin.
+- sc config needs "start=" and its value as separate arguments: auto, demand (manual), disabled.
+
+Devices (cfgmgr32, Plug and Play)
+- Read devices through cfgmgr32 with ctypes: CM_Get_Device_ID_List_SizeW and CM_Get_Device_ID_ListW
+  list them, CM_Locate_DevNodeW opens one, CM_Get_DevNode_Registry_PropertyW reads its names. Use
+  flags 0 for every device and 0x100 (CM_GETIDLIST_FILTER_PRESENT) for the connected ones. 0x80 is
+  a different flag and returns invalid parameter.
+- A device that is not connected cannot be located, so read it from HKLM\SYSTEM\CurrentControlSet\Enum\{instance id}
+  instead. The names there are the same, and it needs no administrator rights.
+- Get-PnpDevice returns connected and not-connected devices together, and its Present property tells them
+  apart. "-PresentOnly:$false" returns only the not-connected ones. Win32_PnPEntity lists only connected devices.
+- Reading the parent through Get-PnpDeviceProperty takes about 60 seconds for 250 devices, one call each.
+  CM_Get_Parent does it in milliseconds, so the tree uses the API.
+- Names can be "@file.inf,%key%;Plain text". The plain text is after the ';'.
+- Manufacturers are full names, such as "Advanced Micro Devices", not "AMD".
+- Problem codes are the CM_PROB_* numbers. 22 is disabled, 28 is no driver, 45 is not connected. This PC
+  had no problem devices, so only the codes for working and not-connected devices have been seen.
+
+Event logs (Get-WinEvent, through PowerShell)
+- events.py sends one PowerShell script per query, encoded with -EncodedCommand and given its request in
+  the EVT_REQUEST environment variable, so no quoting can break it. The script returns JSON.
+- Filter in the query (XPath) where you can: time, level, event id, record number, process id. Windows'
+  XPath subset has no contains(), so "part of a provider's name" is matched in Python, after reading
+  the whole time window. Keep the window short when you filter by provider.
+- XPath times are UTC in the form 2026-10-15T12:00:00.000Z. Events come back in UTC and are shown local.
+- Get-WinEvent messages cost about 3 ms each, so only ask for them where the text is shown (search,
+  errors, shutdowns, inspect). Counting and grouping read without them.
+- Crash data (event 1000) has named fields: AppName, AppVersion, ModuleName, ExceptionCode.
+- Service events name their fields param1, param2 and so on. The service name is param1, except
+  timeouts (7009, 7011), where param1 is the number of milliseconds and param2 is the name.
+- Shutdown evidence: a clean shutdown is 6006, the next boot is 6005, an unexpected one is 6008, a
+  restart without a clean shutdown is Kernel-Power 41, a requested one is User32 1074, a blue screen is
+  BugCheck 1001 (the code is in its message).
+- Application Hang (1002) is a different provider from Winlogon's 1002 on this PC. The crashes page
+  matches the provider too.
+- The Security log, and Microsoft-Windows-Diagnostics-Performance/Operational (boot time), return
+  "Attempted to perform an unauthorized operation" to a terminal that is not elevated. The page turns
+  that into the admin hint. Security also needs auditing on, and this PC's showed no 4625 events.
+- wevtutil epl and cl need the administrator rights the log needs. --backup runs before clearing, and
+  the clear is not run if the backup fails.
+- The baseline file lives in %LOCALAPPDATA%\w11-cli-console, not in the project folder.
+
 ======================================================================
 OPEN ISSUES (things a future prompt may be about)
 ======================================================================
+
+- events: not verified on this PC: the Security log (needs administrator rights here), boot times
+  (Diagnostics-Performance needs them too), hang events (1002 from Application Hang), a real clear
+  (only the refusal and the typed-name check were run), watch with new events arriving, and the
+  .evtx export opened in Event Viewer. Messages are blank for providers whose message file is not
+  installed; that is Windows, not the page.
+- events: the pattern commands (correlate, frequency, baseline) read up to 5000 events, so a busy
+  PC is counted from the newest events only; the output says when that happens.
 
 - Not yet verified from an administrator terminal: changing IP and DNS, connection sharing, features
   on/off/install/uninstall, metered Ethernet, Ethernet 802.1X, and lc on/off. Wi-Fi 802.1X changes
   also need a work or school network to test against. The 802.1X method templates (PEAP,
   certificate, TTLS) in _net.py are untested.
+- services: start, stop, restart and startup type are not yet verified from an administrator terminal.
+  Only the read-only paths (svc ls, svc <id>, --json) and the refusals without admin were run here.
+- device: read-only so far. Not yet built: rescan, enable, disable, restart, drivers export, backup,
+  update, rollback and remove, and diff (which needs a saved inventory). Each needs administrator rights
+  where Windows asks for it, and the update and remove steps must not pretend a newer driver is compatible.
+- device: connection speed and power for usb, and resolutions and refresh rates for displays, are not read yet.
+- device: hidden devices are not listed separately, and the problem texts for codes other than the ones seen
+  here are from the CM_PROB list and are untested on a PC with that problem.
 - volume, brightness, startup, apps and process have no --json or --yes yet. Adding them means
   split_flags in run(), print_json for listings, and _core.confirm in place of their own prompts.
 - location.py predates _core's helpers and has its own is_admin and flag handling.
@@ -353,3 +438,9 @@ hotspot (hs, mobilehotspot): Share this PC's internet, the same as Settings > Mo
 location (lc): The place to see and change everything about location. Typing lc on its own lists every location setting with what it is set to now, and a plain-words explanation of each one. lc why says why location is off or blocked and what would fix it, and with --json it is the first thing an agent should run for a location problem. Location services is the master switch for the whole PC; lc off sets the same Windows policy as gpedit's "Turn off location", and lc on puts it back. If an organisation's policy is what turned it off, lc on refuses and explains, and only lc on --override-management (after the owner agrees) overrides it. Access for apps and the per-app switches come next, then the 7-day list of apps that used location, then the override. The intro should say that the admin-only switch is the one that needs an administrator terminal.
 
 regedit: An interactive Registry Editor, for people who want to look inside Windows and not just flip switches. Typing regedit opens its own prompt, with the path shown in it, and the editor keeps control until the user types exit or 0. It lists the root hives as numbers, and a number opens an item. Its commands are the usual ones: ls, cd, get, add, set, rm, mkdir, rmdir. Destructive steps ask first, and deleting a key with anything under it means typing its name. It never deletes a hive or one of its top two levels, and it never gets around Windows' permissions.
+
+services (svc): The Windows services list, the same as services.msc. It leads with svc ls, then svc <id> to see one, then on, off and restart. Ids are numbered by name, so they shift, and a name works too. Listing and showing need no administrator rights. Every change does, and the admin check runs before anything is announced. Stopping and disabled ask first. The intro says that disabled survives a restart and that setting auto or manual undoes it.
+
+events (evt): The Windows event logs, read so that an agent can reconstruct what happened before a problem. Everyday commands are evt errors, evt recent and evt search. Then the problems by cause (crashes, shutdowns, boot, drivers, services, network, security), then patterns over time (correlate, timeline, frequency, baseline), then logs (list, filter, export, watch, clear). Times read as 2h or 3d. Most logs need no administrator rights; the Security log and boot times do, and the page says so. evt clear is the only change, and it asks for the log's name to be typed, with a backup first unless --no-backup is given. --yes does not skip it.
+
+device (dvc): The Device Manager list, read without changing anything. It leads with dvc ls, then dvc <id> for one device (its driver, what it is plugged into, and its status), then dvc errors for what is wrong. Ids are numbered by name, so they shift. The TIP says that reading needs no administrator rights; the changes that will need them are not built yet. The 'not connected' state is not an error, and the errors page says so.
