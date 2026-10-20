@@ -25,6 +25,8 @@ import time
 
 import psutil
 
+import _core
+
 # ======================================================================
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
@@ -129,14 +131,6 @@ def _get_group(group_id):
 # ======================================================================
 # KILL — ends every process with that name; two warnings for system processes
 # ======================================================================
-def _confirm(question):
-    try:
-        return input(question).strip().lower() in ("y", "yes")
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return False
-
-
 def _terminate(proc):
     """Ends one process. Returns an error message, or None if it ended (or was already gone)."""
     try:
@@ -152,7 +146,7 @@ def _terminate(proc):
     return None
 
 
-def _kill(args):
+def _kill(args, options):
     if len(args) != 2:
         raise ProcessError("usage: prc kill <id>", 2)
     try:
@@ -169,13 +163,13 @@ def _kill(args):
     label = group["name"] if count == 1 else f"{group['name']} ({count} processes)"
     if group["protected"]:
         print(f"warning: {label} includes a Windows system process. Ending it can freeze or crash Windows.")
-        if not _confirm("Are you sure? [y/N]: "):
+        if not _core.confirm("Are you sure? [y/N]: ", options["yes"]):
             print("cancelled")
             return
-        if not _confirm("Really end a system process? This is the last warning. [y/N]: "):
+        if not _core.confirm("Really end a system process? This is the last warning. [y/N]: ", options["yes"]):
             print("cancelled")
             return
-    elif not _confirm(f"End {label}? Unsaved work in it will be lost. [y/N]: "):
+    elif not _core.confirm(f"End {label}? Unsaved work in it will be lost. [y/N]: ", options["yes"]):
         print("cancelled")
         return
 
@@ -223,8 +217,12 @@ def _print_table(header, cell, rows):
         print(line)
 
 
-def _list_groups():
+def _list_groups(options):
     groups = _groups()
+    if options["json"]:
+        _core.print_json([{"id": g["id"], "name": g["name"], "count": len(g["procs"]),
+                           "memory": g["memory"], "protected": g["protected"]} for g in groups])
+        return
     if not groups:
         print("(no processes found)")
         return
@@ -550,27 +548,29 @@ def _show(args):
 # ======================================================================
 # COMMAND — app.py calls run(args) with everything after "process"/"prc"
 # ======================================================================
-def _dispatch(args):
+def _dispatch(args, options):
     command = args[0].lower()
     if command in LIST_WORDS:
         flags = [a.lower() for a in args[1:]]
         if len(flags) > 1 or (flags and flags[0] not in VERBOSE_FLAGS):
             raise ProcessError("usage: prc ls [/verbose]", 2)
         if flags:
+            if options["json"]:
+                raise ProcessError("prc ls /verbose is live, so it has no --json. Use 'prc ls --json' for the list.", 2)
             _live()
             _list_processes()
         else:
-            _list_groups()
+            _list_groups(options)
     elif command in KILL_WORDS:
-        _kill(args)
+        _kill(args, options)
     elif command in SHOW_WORDS:
         _show(args)
     else:
         raise ProcessError(f"unknown process command: {args[0]}\nusage: {USAGE}", 2)
 
-
 def run(args):
     """Run one process command; returns an exit code."""
+    args, options = _core.split_flags(args)
     if not args:
         print(f"usage: {USAGE}")
         return 0
@@ -578,7 +578,7 @@ def run(args):
         print(f"usage: {USAGE}")
         return 0
     try:
-        _dispatch(args)
+        _dispatch(args, options)
         return 0
     except ProcessError as e:
         print(f"error: {e}", file=sys.stderr)

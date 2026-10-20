@@ -27,7 +27,8 @@ py app.py
 | services | `svc` | Windows services: list, search, status, dependencies, failures, start, stop, restart, startup type |
 | hardware | `hw` | Processor, graphics, memory, drives, motherboard, BIOS, USB, sensors, and a full report |
 | system | `sys` | Uptime, load, processes, startup programs, power, PATH, inventory, and an overall health check |
-| device | `dvc` | Devices and drivers, as in Device Manager: status, errors, tree, search |
+| device | `dvc` | Devices and drivers, as in Device Manager: status, errors, tree, search, and turning a device on, off or restarting it |
+| firewall | `fw` | Windows Firewall: turn a network profile on or off, list the rules, and turn one rule on or off |
 | events | `evt` | Windows event logs: errors, crashes, shutdowns, boots, timelines, export and watch |
 | netmon | `net`, `net`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
 
@@ -189,7 +190,7 @@ lc recent                apps that used location in the last 7 days
 lc override on | off     allow location override (a remote device's location)
 ```
 
-For scripts and AI agents, add `--json` to `lc`, `lc why` or `lc apps` for machine-readable output. If a policy from an organisation (Group Policy or device management) is turning location off, `lc on` refuses and explains why. Only after the PC's owner agrees, `lc on --override-management` from an administrator terminal overrides it. The policy may be set back at the next refresh.
+For scripts and AI agents, add `--json` to `lc`, `lc why` or `lc apps` for machine-readable output. The same goes for `vm ls` and `vm <id>`, `bn get` and `bn info`, `su ls` and `su <id>`, `apps ls`, `prc ls` (the list, not `/verbose`), `dvc` and `fw`. `--yes` answers the confirmations in `su rm`, `apps rm`, `prc kill`, and the `dvc` and `fw` changes. If a policy from an organisation (Group Policy or device management) is turning location off, `lc on` refuses and explains why. Only after the PC's owner agrees, `lc on --override-management` from an administrator terminal overrides it. The policy may be set back at the next refresh.
 
 Location services is the master switch. `lc off` sets the Windows policy "Turn off location" (`DisableLocation` under `HKLM\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors`), the same value `gpedit.msc` writes. `lc on` sets it back to 0. Nothing is deleted. Windows applies policy changes at the next refresh, or run `gpupdate /force` to apply now.
 
@@ -299,9 +300,33 @@ dvc tree                        connected devices, by what they are plugged into
 dvc search VID_1E71             find by name, class, hardware ID, vendor or driver provider
 dvc usb | displays | audio | storage
 dvc report                      the whole inventory as JSON, for scripts and agents
+dvc 12 enable                   turn device 12 on (administrator)
+dvc 12 disable                 turn it off (administrator; asks first, twice for keyboards, mice, network and screens)
+dvc 12 restart                 restart it (administrator; asks first)
+dvc driver add new.inf         install a driver package, which is how a driver is updated (administrator; asks first)
+dvc driver rm 12               remove device 12's driver package (administrator; asks first)
 ```
 
-Nothing here needs administrator rights. "Disabled" means turned off in Device Manager, and "not connected" means the device is known to Windows but is not plugged in or present right now. Changing a device (enable, disable, restart, updating or removing a driver) is not built yet.
+Reading needs no administrator rights. "Disabled" means turned off in Device Manager, and "not connected" means the device is known to Windows but is not plugged in or present right now.
+
+The changes use `pnputil`, the Windows tool that Device Manager's own commands use. Each change checks for administrator rights before it asks anything, reads the device back afterwards, and says what Windows reports now. `dvc driver rm` only removes packages you installed (`oem` packages); the ones that came with Windows are refused. Removing a driver can stop the device working until another driver is installed, so the question says so. A driver update here means installing a newer `.inf`; there is no "update driver" for a device that finds one on its own.
+
+### Firewall
+
+Type `fw` to see each network profile (domain, private, public): whether the firewall is on, what it does by default for incoming and outgoing traffic, and which networks this PC is connected to. The rules come after that.
+
+```
+fw                             each profile, and the networks this PC is on
+fw rules                       every rule, numbered by name, 40 to a page
+fw rules in block              incoming rules that block
+fw rules off                   rules that are turned off
+fw rules search print          find by name
+fw rule 12                     one rule in full: its program, ports and addresses
+fw rule 12 on | off            turn one rule on or off (administrator; asks first)
+fw on | off public             turn the firewall on or off for one profile, or all three (administrator)
+```
+
+Reading needs no administrator rights. Turning a profile off asks first, and warns when you are on a public network. Turning the firewall off also stops every rule for that profile from applying, including the blocks that `net block` made. Rule ids are numbered by name, so they shift as rules come and go. Rules that `net block` made show up here too, marked as made by `net block`. Rules are not deleted from this page.
 
 ### Event logs
 
@@ -391,7 +416,7 @@ def run(args):             # args = words after the name
 - `_net.py`: code shared by the wifi and ethernet pages (adapter details, IP, DNS, sharing, features, 802.1X)
 - `intro.txt`: the banner shown when the console starts
 - `settings.py`: the `settings` list, which shows every setting
-- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`, `netmon.py`: settings
+- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`, `netmon.py`, `firewall.py`: settings
 - `_probe.py`: code shared by hardware and system (one PowerShell call per group of readings, the processor API, power status, tables)
 - `fashion.txt`: the pattern every new page follows, and what each setting is for
 - `brightness.ahk`: the older AutoHotkey version of brightness

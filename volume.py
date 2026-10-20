@@ -19,6 +19,8 @@ import sys
 import psutil
 from pycaw.pycaw import AudioUtilities
 
+import _core
+
 # ======================================================================
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
@@ -106,11 +108,15 @@ def _set_percent(group, percent):
         session.SimpleAudioVolume.SetMasterVolume(level, None)
 
 
-def _list():
+def _list(options):
     sources = _sources()
+    levels = [(sid, name, _get_percent(group)) for sid, name, group in sources]
+    if options["json"]:
+        _core.print_json([{"id": sid, "name": name, "volume": percent} for sid, name, percent in levels])
+        return
     print(f"{'ID':<4}{'SOURCE':<28}VOLUME")
-    for sid, name, group in sources:
-        print(f"{sid:<4}{name:<28}{_get_percent(group)}%")
+    for sid, name, percent in levels:
+        print(f"{sid:<4}{name:<28}{percent}%")
     if len(sources) == 1:
         print("(no apps are playing audio right now)")
 
@@ -118,11 +124,11 @@ def _list():
 # ======================================================================
 # COMMAND — app.py calls run(args) with everything after "volume"/"vm"
 # ======================================================================
-def _dispatch(args):
+def _dispatch(args, options):
     if args[0].lower() in ("ls", "list"):
         if len(args) > 1:
             raise VolumeError("usage: vm ls", 2)
-        _list()
+        _list(options)
         return
 
     try:
@@ -133,7 +139,7 @@ def _dispatch(args):
     name, group = _get_source(source_id)
 
     if len(args) == 1:
-        print(f"{name}: {_get_percent(group)}%")
+        _report(options, source_id, name, _get_percent(group))
         return
 
     try:
@@ -142,11 +148,18 @@ def _dispatch(args):
         raise VolumeError("volume needs a number from 0 to 100", 2)
     percent = max(0, min(100, round(percent)))
     _set_percent(group, percent)
-    print(f"{name}: {percent}%")
+    _report(options, source_id, name, _get_percent(group))  # read back, so it shows what Windows has
 
+
+def _report(options, source_id, name, percent):
+    if options["json"]:
+        _core.print_json({"id": source_id, "name": name, "volume": percent})
+    else:
+        print(f"{name}: {percent}%")
 
 def run(args):
     """Run one volume command; returns an exit code."""
+    args, options = _core.split_flags(args)
     if not args:
         print(f"usage: vm {USAGE}")
         return 0
@@ -154,7 +167,7 @@ def run(args):
         print(f"usage: vm {USAGE}")
         return 0
     try:
-        _dispatch(args)
+        _dispatch(args, options)
         return 0
     except VolumeError as e:
         print(f"error: {e}", file=sys.stderr)

@@ -18,6 +18,8 @@ import os
 import sys
 import winreg
 
+import _core
+
 # ======================================================================
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
@@ -162,8 +164,11 @@ def _state(entry):
     return "enabled" if entry["enabled"] else "disabled"
 
 
-def _list():
+def _list(options):
     entries = _entries()
+    if options["json"]:
+        _core.print_json([_brief(e) for e in entries])
+        return
     if not entries:
         print("(no startup apps found)")
         return
@@ -171,6 +176,16 @@ def _list():
     for entry in entries:
         print(f"{entry['id']:<4}{entry['name'][:32]:<34}{_state(entry):<10}{entry['scope']}")
 
+
+def _brief(entry):
+    return {"id": entry["id"], "name": entry["name"], "enabled": entry["enabled"], "scope": entry["scope"]}
+
+
+def _show(entry, options):
+    if options["json"]:
+        _core.print_json(_brief(entry))
+    else:
+        print(f"{entry['name']}: {_state(entry)}")
 
 def _remove(entry):
     """Deletes the startup entry itself: its Run value, or its shortcut in the Startup folder."""
@@ -188,15 +203,7 @@ def _remove(entry):
         raise StartupError(f"{entry['name']} is already gone", 1)
 
 
-def _confirm(question):
-    try:
-        return input(question).strip().lower() in ("y", "yes")
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return False
-
-
-def _remove_command(args):
+def _remove_command(args, options):
     if len(args) != 2:
         raise StartupError("usage: su rm <id>", 2)
     try:
@@ -205,9 +212,10 @@ def _remove_command(args):
         raise StartupError("su rm needs an id from 'su ls'", 2)
 
     entry = _get_entry(entry_id)
-    if not _confirm(
+    if not _core.confirm(
         f"Remove {entry['name']} from startup? It won't start with Windows again, "
-        "and the app stays installed. This can't be undone. [y/N]: "
+        "and the app stays installed. This can't be undone. [y/N]: ",
+        options["yes"],
     ):
         print("cancelled")
         return
@@ -217,15 +225,15 @@ def _remove_command(args):
     print(f"removed {entry['name']} from startup")
 
 
-def _dispatch(args):
+def _dispatch(args, options):
     if args[0].lower() in ("ls", "list"):
         if len(args) > 1:
             raise StartupError("usage: su ls", 2)
-        _list()
+        _list(options)
         return
 
     if args[0].lower() in REMOVE_WORDS:
-        _remove_command(args)
+        _remove_command(args, options)
         return
 
     try:
@@ -236,7 +244,7 @@ def _dispatch(args):
     entry = _get_entry(entry_id)
 
     if len(args) == 1:
-        print(f"{entry['name']}: {_state(entry)}")
+        _show(entry, options)
         return
 
     word = args[1].lower()
@@ -248,11 +256,11 @@ def _dispatch(args):
         raise StartupError("use on or off, e.g. su 3 off", 2)
 
     _set_enabled(entry, enabled)
-    print(f"{entry['name']}: {'enabled' if enabled else 'disabled'}")
-
+    _show(_get_entry(entry_id), options)  # read back, so it shows what Windows has
 
 def run(args):
     """Run one startup command; returns an exit code."""
+    args, options = _core.split_flags(args)
     if not args:
         print(f"usage: su {USAGE}")
         return 0
@@ -260,7 +268,7 @@ def run(args):
         print(f"usage: su {USAGE}")
         return 0
     try:
-        _dispatch(args)
+        _dispatch(args, options)
         return 0
     except StartupError as e:
         print(f"error: {e}", file=sys.stderr)

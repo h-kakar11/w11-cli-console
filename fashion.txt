@@ -40,7 +40,7 @@ _probe.py        Shared reading code for hardware and system: one PowerShell cal
                  readings (probe, sample), the processor API, power status, powercfg, and table/emit.
 settings.py      The "settings" list. It reads every page itself, so never edit it to add one.
 volume.py, brightness.py, startup.py, apps.py, process.py, wifi.py, ethernet.py, hotspot.py,
-location.py, regedit.py, services.py, device.py, events.py, hardware.py, system.py, netmon.py
+location.py, regedit.py, services.py, device.py, events.py, hardware.py, system.py, netmon.py, firewall.py
                  The pages.
 intro.txt        The banner the console prints when it starts.
 README.md        For users: the table of settings and a section per setting.
@@ -56,6 +56,8 @@ Which file to copy:
 - netsh, and many settings under headings ...... wifi.py
 - an interactive page with its own prompt ...... regedit.py
 - a list built from Windows' device API (ctypes, cfgmgr32) .. device.py
+- changes made through a Windows tool and read back (pnputil for devices, the NetSecurity cmdlets for the firewall),
+  each checking admin rights before the question .. device.py (CHANGES), firewall.py
 - reading the Windows event logs (one PowerShell Get-WinEvent call per query) .. events.py
 - a live view that redraws in place, sorted tables, per-program groups, sampled history, and
   actions that ask first (ending a process, a firewall block) .. netmon.py (psutil for connections
@@ -411,14 +413,21 @@ OPEN ISSUES (things a future prompt may be about)
   certificate, TTLS) in _net.py are untested.
 - services: start, stop, restart and startup type are not yet verified from an administrator terminal.
   Only the read-only paths (svc ls, svc <id>, --json) and the refusals without admin were run here.
-- device: read-only so far. Not yet built: rescan, enable, disable, restart, drivers export, backup,
-  update, rollback and remove, and diff (which needs a saved inventory). Each needs administrator rights
-  where Windows asks for it, and the update and remove steps must not pretend a newer driver is compatible.
+- device changes (enable, disable, restart, driver add and rm) were written and tested only with the Windows
+  readings and pnputil faked. Not yet run on Windows. Check: pnputil's exit codes (a success that needs a
+  restart returns 3010, which the page treats as a failure), the wording of its output, that
+  /delete-driver without /force refuses a package that is in use, and that the read-back shows the change.
+- device: not built yet: rescan, drivers export, backup, rollback, and diff (which needs a saved inventory).
 - device: connection speed and power for usb, and resolutions and refresh rates for displays, are not read yet.
 - device: hidden devices are not listed separately, and the problem texts for codes other than the ones seen
   here are from the CM_PROB list and are untested on a PC with that problem.
-- volume, brightness, startup, apps and process have no --json or --yes yet. Adding them means
-  split_flags in run(), print_json for listings, and _core.confirm in place of their own prompts.
+- volume, brightness, startup, apps and process now take --json (listings and readings) and --yes
+  (startup rm, apps rm, prc kill). Their JSON and --yes paths were tested with fake readings only.
+- firewall: not run on Windows. Check: Get-NetFirewallProfile and Get-NetFirewallRule return Enabled, Direction,
+  Action and Profile with the ToString() values this page expects; Get-NetConnectionProfile on a PC with no
+  connection; how long Get-NetFirewallRule takes on a PC with many rules (the list call allows 120 s); and that
+  Set-NetFirewallProfile with -Profile Domain,Private,Public works from a non-elevated terminal (it should refuse).
+  The rule name check only lets letters, digits, dots, braces and dashes through to PowerShell.
 - location.py predates _core's helpers and has its own is_admin and flag handling.
 - app.py's console uses shlex.split, which eats backslashes for every page except regedit.
 - Piping the console's output without PYTHONIOENCODING=utf-8 crashes on the banner.
@@ -434,6 +443,8 @@ WHAT EACH SETTING IS FOR
 These describe what the user wants from each page. Each intro should lead with the thing that
 setting is most often used for. New pages follow the same order: the most common action first, the
 risky one last with its warning, and a TIP that heads off the first thing that goes wrong.
+
+firewall (fw): Windows Firewall. fw shows each profile and the networks this PC is on, fw rules lists the rules with filters, and fw rule <id> explains one. Turning a profile off asks first and warns about public networks, and turning off a profile also stops the net block rules. Rules are changed on and off, not deleted.
 
 netmon (net, nm, traffic): What is on the network right now, and what is responsible for it. The overview answers "is anything unusual?" in one screen; "net live" keeps it updating; "net <id>" explains one connection and offers the two actions that change something (kill the program, block the address), each asking first. Shows connections, programs, domains and bytes per adapter. It does not promise bytes per program, because Windows does not give them to ordinary users.
 
@@ -463,4 +474,4 @@ services (svc): The Windows services list, the same as services.msc. It leads wi
 
 events (evt): The Windows event logs, read so that an agent can reconstruct what happened before a problem. Everyday commands are evt errors, evt recent and evt search. Then the problems by cause (crashes, shutdowns, boot, drivers, services, network, security), then patterns over time (correlate, timeline, frequency, baseline), then logs (list, filter, export, watch, clear). Times read as 2h or 3d. Most logs need no administrator rights; the Security log and boot times do, and the page says so. evt clear is the only change, and it asks for the log's name to be typed, with a backup first unless --no-backup is given. --yes does not skip it.
 
-device (dvc): The Device Manager list, read without changing anything. It leads with dvc ls, then dvc <id> for one device (its driver, what it is plugged into, and its status), then dvc errors for what is wrong. Ids are numbered by name, so they shift. The TIP says that reading needs no administrator rights; the changes that will need them are not built yet. The 'not connected' state is not an error, and the errors page says so.
+device (dvc): The Device Manager list, read without changing anything. It leads with dvc ls, then dvc <id> for one device (its driver, what it is plugged into, and its status), then dvc errors for what is wrong. Ids are numbered by name, so they shift. The TIP says that reading needs no administrator rights. The changes (enable, disable, restart, driver add and rm) need an administrator terminal, check it before asking, and read the device back. The 'not connected' state is not an error, and the errors page says so.
