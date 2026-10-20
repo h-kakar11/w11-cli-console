@@ -29,6 +29,7 @@ py app.py
 | system | `sys` | Uptime, load, processes, startup programs, power, PATH, inventory, and an overall health check |
 | device | `dvc` | Devices and drivers, as in Device Manager: status, errors, tree, search |
 | events | `evt` | Windows event logs: errors, crashes, shutdowns, boots, timelines, export and watch |
+| netmon | `nm`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
 
 Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 
@@ -332,6 +333,40 @@ Most logs need no administrator rights. The Security log, and the Diagnostics-Pe
 
 Windows writes event messages in the language of the PC, and not every provider's message file is installed, so some messages are blank. The baseline is saved to `%LOCALAPPDATA%\w11-cli-console\events-baseline.json`, outside this folder.
 
+### Network monitor
+
+`net` is already the wifi page's short name, so this page is `nm` (also `traffic`).
+
+```
+nm                        overview: interfaces, connections, busiest programs, findings
+nm live [seconds]         live view, redrawn every 2 s (Ctrl+C stops and saves a sample)
+nm ls                     every connection, with program, domain and how long it has been open
+nm ls --sort seen         longest open first (also: program, remote, port, state, domain, proto)
+nm ls --state listen --loopback --process svchost.exe --ip 192.168.1.50 --proto tcp
+nm 12                     one connection in full: its program, why it exists, what you can do
+nm procs                  traffic by program: connections, peers, domains, and what each one is
+nm iface                  Wi-Fi and Ethernet: speed, bytes since Windows started, rate now
+nm history [days]         totals and busiest programs from earlier nm live sessions
+nm history clear          delete the saved samples (asks first)
+nm kill 12                end the program that owns connection 12 (asks first; Windows parts refused)
+nm block 12               block the remote address of connection 12, in and out (administrator; asks first)
+nm block 203.0.113.9      block an address directly
+nm block ls               list the blocks this page made
+nm unblock 203.0.113.9    remove them
+```
+
+`nm ls` hides connections that stay on this PC; `--loopback` shows them. Ids follow the list, so check the program in `nm 12` before you kill or block. A few addresses are refused, so blocking cannot cut this PC off: its own addresses, its router, and its DNS servers.
+
+What it can and cannot tell you:
+
+- **Bytes** are counted per adapter (`nm iface`, and `nm history`). Windows does not give ordinary users byte counts per connection or per program, so `nm procs` shows connections and peers instead.
+- **Domains** come from the names Windows looked up recently (its DNS cache), then from a reverse lookup of the address. Some addresses have no name.
+- **"Open for"** is the time since `nm` first saw a connection. It is not the time since the connection began, which Windows does not report.
+- **Why it exists** is a best guess from the port, the program and the address. It says "usually" and "likely" because a program can use any port.
+- **Blocks** are Windows Firewall rules named `w11-cli-console-block-<ip>-out` and `-in`. `nm unblock` removes them.
+
+Samples are saved to `%LOCALAPPDATA%\w11-cli-console\net-history.jsonl` once a minute while `nm live` runs, and kept for 30 days. The first-seen times are in `net-seen.json` in the same folder.
+
 ## Adding a setting
 
 Create a `.py` file in this folder. `app.py` loads it automatically. It needs:
@@ -356,7 +391,7 @@ def run(args):             # args = words after the name
 - `_net.py`: code shared by the wifi and ethernet pages (adapter details, IP, DNS, sharing, features, 802.1X)
 - `intro.txt`: the banner shown when the console starts
 - `settings.py`: the `settings` list, which shows every setting
-- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`: settings
+- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`, `netmon.py`: settings
 - `_probe.py`: code shared by hardware and system (one PowerShell call per group of readings, the processor API, power status, tables)
 - `fashion.txt`: the pattern every new page follows, and what each setting is for
 - `brightness.ahk`: the older AutoHotkey version of brightness
