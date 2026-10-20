@@ -387,12 +387,13 @@ OPEN ISSUES (things a future prompt may be about)
   names come back), the adapter names psutil reports against the friendly names _net gives (the
   matching is in _match), Get-DnsClientCache output, netsh advfirewall add/delete with name= and
   remoteip= (no spaces in the rule name), and Get-NetFirewallRule's Enabled value in JSON.
-- netmon: the name "net" is wifi's alias. A duplicate alias does not fail: _core.registry() keeps
-  whichever page loads last, so check that "nm" and "net" still route to netmon and wifi after any change.
+- netmon: "net" was wifi's alias until netmon took it (wifi keeps "internet" and "wf"). A duplicate
+  alias does not fail: _core.registry() keeps whichever page loads last, so check after any alias change
+  that "net" and "nm" route to netmon and "wifi" still works.
 - netmon: bytes per connection and per program are not measured. The only Windows source is ETW
   (Microsoft-Windows-Kernel-Network), which needs administrator rights and a trace session. Adding it
   would be a separate page or an opt-in admin mode.
-- netmon: connection duration is "since nm first saw it", kept in net-seen.json. Windows does not
+- netmon: connection duration is "since netmon first saw it", kept in net-seen.json. Windows does not
   give the real start time of a socket to ordinary users.
 - netmon: a reverse DNS lookup can take seconds. Commands wait up to 2 s, live refreshes 0.3 s, and the
   lookups finish in background threads.
@@ -434,7 +435,7 @@ These describe what the user wants from each page. Each intro should lead with t
 setting is most often used for. New pages follow the same order: the most common action first, the
 risky one last with its warning, and a TIP that heads off the first thing that goes wrong.
 
-netmon (nm, traffic): What is on the network right now, and what is responsible for it. The overview answers "is anything unusual?" in one screen; "nm live" keeps it updating; "nm <id>" explains one connection and offers the two actions that change something (kill the program, block the address), each asking first. Shows connections, programs, domains and bytes per adapter. It does not promise bytes per program, because Windows does not give them to ordinary users.
+netmon (net, nm, traffic): What is on the network right now, and what is responsible for it. The overview answers "is anything unusual?" in one screen; "net live" keeps it updating; "net <id>" explains one connection and offers the two actions that change something (kill the program, block the address), each asking first. Shows connections, programs, domains and bytes per adapter. It does not promise bytes per program, because Windows does not give them to ordinary users.
 
 settings (menu): The front door. Someone who does not know the commands types "settings" and sees every setting in one numbered, blue list, with what each does and the first command to type. They can then type a number or a name at the prompt to open a setting's intro. It should always be the easiest thing to find, so every new page has to show up here with a clear SUMMARY.
 

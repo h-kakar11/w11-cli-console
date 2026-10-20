@@ -18,7 +18,7 @@ py app.py
 | startup | `su`, `start` | Apps that start with Windows |
 | apps | `app` | Installed apps, and uninstalling them |
 | process | `prc` | Running processes, ending them, live system stats |
-| wifi | `net`, `internet`, `wf` | Join Wi-Fi, known networks, and every Wi-Fi setting |
+| wifi | `internet`, `wf` | Join Wi-Fi, known networks, and every Wi-Fi setting |
 | ethernet | `eth`, `lan`, `wired` | Wired network: details, IP, DNS, 802.1X, metered |
 | hotspot | `hs`, `mobilehotspot` | Share this PC's internet as a Wi-Fi hotspot |
 | settings | `menu` | Every setting in one list, and how to open each |
@@ -29,7 +29,7 @@ py app.py
 | system | `sys` | Uptime, load, processes, startup programs, power, PATH, inventory, and an overall health check |
 | device | `dvc` | Devices and drivers, as in Device Manager: status, errors, tree, search |
 | events | `evt` | Windows event logs: errors, crashes, shutdowns, boots, timelines, export and watch |
-| netmon | `nm`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
+| netmon | `net`, `net`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
 
 Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 
@@ -335,37 +335,37 @@ Windows writes event messages in the language of the PC, and not every provider'
 
 ### Network monitor
 
-`net` is already the wifi page's short name, so this page is `nm` (also `traffic`).
+`net` opens this page. `nm` and `traffic` work too.
 
 ```
-nm                        overview: interfaces, connections, busiest programs, findings
-nm live [seconds]         live view, redrawn every 2 s (Ctrl+C stops and saves a sample)
-nm ls                     every connection, with program, domain and how long it has been open
-nm ls --sort seen         longest open first (also: program, remote, port, state, domain, proto)
-nm ls --state listen --loopback --process svchost.exe --ip 192.168.1.50 --proto tcp
-nm 12                     one connection in full: its program, why it exists, what you can do
-nm procs                  traffic by program: connections, peers, domains, and what each one is
-nm iface                  Wi-Fi and Ethernet: speed, bytes since Windows started, rate now
-nm history [days]         totals and busiest programs from earlier nm live sessions
-nm history clear          delete the saved samples (asks first)
-nm kill 12                end the program that owns connection 12 (asks first; Windows parts refused)
-nm block 12               block the remote address of connection 12, in and out (administrator; asks first)
-nm block 203.0.113.9      block an address directly
-nm block ls               list the blocks this page made
-nm unblock 203.0.113.9    remove them
+net                        overview: interfaces, connections, busiest programs, findings
+net live [seconds]         live view, redrawn every 2 s (Ctrl+C stops and saves a sample)
+net ls                     every connection, with program, domain and how long it has been open
+net ls --sort seen         longest open first (also: program, remote, port, state, domain, proto)
+net ls --state listen --loopback --process svchost.exe --ip 192.168.1.50 --proto tcp
+net 12                     one connection in full: its program, why it exists, what you can do
+net procs                  traffic by program: connections, peers, domains, and what each one is
+net iface                  Wi-Fi and Ethernet: speed, bytes since Windows started, rate now
+net history [days]         totals and busiest programs from earlier net live sessions
+net history clear          delete the saved samples (asks first)
+net kill 12                end the program that owns connection 12 (asks first; Windows parts refused)
+net block 12               block the remote address of connection 12, in and out (administrator; asks first)
+net block 203.0.113.9      block an address directly
+net block ls               list the blocks this page made
+net unblock 203.0.113.9    remove them
 ```
 
-`nm ls` hides connections that stay on this PC; `--loopback` shows them. Ids follow the list, so check the program in `nm 12` before you kill or block. A few addresses are refused, so blocking cannot cut this PC off: its own addresses, its router, and its DNS servers.
+`net ls` hides connections that stay on this PC; `--loopback` shows them. Ids follow the list, so check the program in `net 12` before you kill or block. A few addresses are refused, so blocking cannot cut this PC off: its own addresses, its router, and its DNS servers.
 
 What it can and cannot tell you:
 
-- **Bytes** are counted per adapter (`nm iface`, and `nm history`). Windows does not give ordinary users byte counts per connection or per program, so `nm procs` shows connections and peers instead.
+- **Bytes** are counted per adapter (`net iface`, and `net history`). Windows does not give ordinary users byte counts per connection or per program, so `net procs` shows connections and peers instead.
 - **Domains** come from the names Windows looked up recently (its DNS cache), then from a reverse lookup of the address. Some addresses have no name.
-- **"Open for"** is the time since `nm` first saw a connection. It is not the time since the connection began, which Windows does not report.
+- **"Open for"** is the time since `net` first saw a connection. It is not the time since the connection began, which Windows does not report.
 - **Why it exists** is a best guess from the port, the program and the address. It says "usually" and "likely" because a program can use any port.
-- **Blocks** are Windows Firewall rules named `w11-cli-console-block-<ip>-out` and `-in`. `nm unblock` removes them.
+- **Blocks** are Windows Firewall rules named `w11-cli-console-block-<ip>-out` and `-in`. `net unblock` removes them.
 
-Samples are saved to `%LOCALAPPDATA%\w11-cli-console\net-history.jsonl` once a minute while `nm live` runs, and kept for 30 days. The first-seen times are in `net-seen.json` in the same folder.
+Samples are saved to `%LOCALAPPDATA%\w11-cli-console\net-history.jsonl` once a minute while `net live` runs, and kept for 30 days. The first-seen times are in `net-seen.json` in the same folder.
 
 ## Adding a setting
 
