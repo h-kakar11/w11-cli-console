@@ -40,7 +40,7 @@ _probe.py        Shared reading code for hardware and system: one PowerShell cal
                  readings (probe, sample), the processor API, power status, powercfg, and table/emit.
 settings.py      The "settings" list. It reads every page itself, so never edit it to add one.
 volume.py, brightness.py, startup.py, apps.py, process.py, wifi.py, ethernet.py, hotspot.py,
-location.py, regedit.py, services.py, device.py, events.py, hardware.py, system.py
+location.py, regedit.py, services.py, device.py, events.py, hardware.py, system.py, netmon.py
                  The pages.
 intro.txt        The banner the console prints when it starts.
 README.md        For users: the table of settings and a section per setting.
@@ -57,6 +57,9 @@ Which file to copy:
 - an interactive page with its own prompt ...... regedit.py
 - a list built from Windows' device API (ctypes, cfgmgr32) .. device.py
 - reading the Windows event logs (one PowerShell Get-WinEvent call per query) .. events.py
+- a live view that redraws in place, sorted tables, per-program groups, sampled history, and
+  actions that ask first (ending a process, a firewall block) .. netmon.py (psutil for connections
+  and adapter counters; _net for adapters; process.py's protected-name rule)
 - read-only reports on hardware or live load (no changes, shared readings) .. hardware.py, system.py
 - read-only views of a Windows service: sc queryex, registry for config .. services.py (the read-only section)
 
@@ -379,6 +382,20 @@ Event logs (Get-WinEvent, through PowerShell)
 OPEN ISSUES (things a future prompt may be about)
 ======================================================================
 
+- netmon: written on Linux with psutil and the Windows readings faked (tests in no repo file). Not run
+  on Windows yet. Check first: psutil.net_connections without administrator rights (which pids and
+  names come back), the adapter names psutil reports against the friendly names _net gives (the
+  matching is in _match), Get-DnsClientCache output, netsh advfirewall add/delete with name= and
+  remoteip= (no spaces in the rule name), and Get-NetFirewallRule's Enabled value in JSON.
+- netmon: the name "net" is wifi's alias. A duplicate alias does not fail: _core.registry() keeps
+  whichever page loads last, so check that "nm" and "net" still route to netmon and wifi after any change.
+- netmon: bytes per connection and per program are not measured. The only Windows source is ETW
+  (Microsoft-Windows-Kernel-Network), which needs administrator rights and a trace session. Adding it
+  would be a separate page or an opt-in admin mode.
+- netmon: connection duration is "since nm first saw it", kept in net-seen.json. Windows does not
+  give the real start time of a socket to ordinary users.
+- netmon: a reverse DNS lookup can take seconds. Commands wait up to 2 s, live refreshes 0.3 s, and the
+  lookups finish in background threads.
 - events: not verified on this PC: the Security log (needs administrator rights here), boot times
   (Diagnostics-Performance needs them too), hang events (1002 from Application Hang), a real clear
   (only the refusal and the typed-name check were run), watch with new events arriving, and the
@@ -416,6 +433,8 @@ WHAT EACH SETTING IS FOR
 These describe what the user wants from each page. Each intro should lead with the thing that
 setting is most often used for. New pages follow the same order: the most common action first, the
 risky one last with its warning, and a TIP that heads off the first thing that goes wrong.
+
+netmon (nm, traffic): What is on the network right now, and what is responsible for it. The overview answers "is anything unusual?" in one screen; "nm live" keeps it updating; "nm <id>" explains one connection and offers the two actions that change something (kill the program, block the address), each asking first. Shows connections, programs, domains and bytes per adapter. It does not promise bytes per program, because Windows does not give them to ordinary users.
 
 settings (menu): The front door. Someone who does not know the commands types "settings" and sees every setting in one numbered, blue list, with what each does and the first command to type. They can then type a number or a name at the prompt to open a setting's intro. It should always be the easiest thing to find, so every new page has to show up here with a clear SUMMARY.
 
