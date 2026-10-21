@@ -51,6 +51,8 @@ import _net
 NAME = "wifi"
 ALIASES = ["internet", "wf"]
 SUMMARY = "Connect to Wi-Fi, and every Wi-Fi setting"
+# extra words people use, for 'settings search'
+KEYWORDS = ["wireless", "wlan", "ssid", "router", "password", "network", "internet", "connect", "join"]
 USAGE = ("wifi ls | wifi status | wifi info | wifi on|off | wifi <id> [on|off] | wifi rm <id> | "
          "wifi known [...] | wifi metered on|off | wifi random on|off | wifi auth | wifi ip | wifi dns | "
          "wifi share | wifi features | wifi hotspot   (e.g. wifi 3 on)")

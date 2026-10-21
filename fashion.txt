@@ -153,8 +153,9 @@ _net.NetError.
 
 --json makes a reading command print plain data with the same keys every time (no colour, no prose).
 --yes answers a confirmation in advance. An agent passes it only after the person has agreed to that
-change. wifi, ethernet and hotspot do this. location has its own flags (--json, --override-management).
-volume, brightness, startup, apps and process do not support --json yet.
+change. Every page takes both, except regedit, which is interactive. location also has --override-management.
+"settings --json" lists every setting, its short forms and every command with what it does, as data: that is where an
+agent should start. Pages that print their status when typed alone set RUN_ALONE, and "<name> help" shows their intro.
 
 ======================================================================
 SHARED CODE (read these instead of rewriting them)
@@ -183,6 +184,17 @@ _net.py
   service_state(name), restart_service(name)
   ethernet_metered / set_ethernet_metered, sharing_state, home_choices, features
   export_xml, add_xml, onex_summary, with_cache, with_method, auth_rows    802.1X profiles
+
+_win.py   (for pages that read and change things through PowerShell, the registry and the Settings app)
+  powershell(script, timeout, env)  run a PowerShell script, wrapped so a failure comes back as plain text (not CLIXML);
+                                    Windows' reason is raised as _net.NetError. Pass values through env=, never into the text
+  powershell_json(script)           the objects a script wrote, as a list of dicts (empty if none); dates become ISO text
+  open_settings(uri)                open a Settings page (ms-settings:...) where Windows has no API for a setting (rule 13)
+  reg_values / reg_subkeys / reg_write / reg_delete   the registry; a refused write is raised as the administrator hint
+  data_dir / load_json / save_json  small files in %LOCALAPPDATA%\w11-cli-console (snapshots, backups, caches)
+  ago(when)                         "5 minutes ago", "3 days ago", "never"
+  Older pages still have their own PowerShell runners (firewall._ps, brightness._powershell, events._powershell,
+  _probe._powershell). New pages use _win.powershell.
 
 ======================================================================
 RULES
@@ -273,6 +285,14 @@ TESTING (without side effects)
   appears correctly in "settings".
 - Run every page's intro once after changing _core.py, since every page uses it.
 - Compile everything: for f in *.py; do py -m py_compile "$f"; done
+- Sessions that run in a Linux container cannot run Windows at all. Pages written there (netmon, firewall, device
+  changes, and the pages after them) were tested with the Windows side faked: a winreg stub backed by a dictionary, a fake
+  ctypes.windll, a fake subprocess that answers PowerShell, pnputil, logman and the rest by matching the command text,
+  stub pycaw, comtypes and winrt, and builtins.input replaced to give the answers. That proves the page's logic, its
+  output, its --json keys, its exit codes, and that it asks before it changes anything. It does not prove what Windows
+  returns, so every such page has an OPEN ISSUES entry that lists what to look at on a real PC. Those test scripts live
+  outside the repo (there is no tests folder). If you write a page without Windows, build the same kind of fakes, run
+  python with PYTHONDONTWRITEBYTECODE=1 so no .pyc lands in the project, and say what you could not check.
 
 ======================================================================
 FINISHING

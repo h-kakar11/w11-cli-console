@@ -30,7 +30,9 @@ import _net
 # ======================================================================
 NAME = "firewall"
 ALIASES = ["fw"]
-SUMMARY = "Windows Firewall: profiles, rules, and turning them on or off"
+SUMMARY = "Windows Firewall: profiles, rules, turning them on or off"
+# extra words people use, for 'settings search'
+KEYWORDS = ["security", "block", "ports", "windows firewall", "rules", "allow an app"]
 USAGE = "fw | fw on|off [profile] | fw rules [filters] | fw rule <id> [on|off]"
 HELP = [
     ("fw", "each network profile: on or off, and its default for incoming traffic"),
@@ -40,6 +42,7 @@ HELP = [
     ("fw rule <id> on|off", "turn one rule on or off (administrator)"),
 ]
 TIP = "Public is for networks you do not trust, such as cafes and airports. Keep it on."
+RUN_ALONE = True  # typing 'fw' on its own shows the status, which changes nothing
 
 PROFILES = ("domain", "private", "public")
 LIST_WORDS = ("rules", "ls", "list")
@@ -239,6 +242,7 @@ def _status(options):
         ("change it with", [
             ("fw on|off <profile>", "turn a profile on or off (administrator; turning off asks first)"),
             ("fw rules", "list the firewall rules"),
+            ("fw help", "everything this page can do"),
         ]),
     ])
     return 0

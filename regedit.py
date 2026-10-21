@@ -38,6 +38,8 @@ import _core
 NAME = "regedit"
 ALIASES = []
 SUMMARY = "Browse and edit the Windows registry, interactively"
+# extra words people use, for 'settings search'
+KEYWORDS = ["registry", "hive", "key", "value", "hklm", "hkcu"]
 USAGE = "regedit   (opens the editor; inside it, type help)"
 HELP = [
     ("regedit", "open the registry editor, with the root hives numbered"),

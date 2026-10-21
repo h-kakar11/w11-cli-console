@@ -30,6 +30,9 @@ import _probe
 NAME = "hardware"
 ALIASES = ["hw"]
 SUMMARY = "Processor, graphics, memory, drives, board and sensors"
+# extra words people use, for 'settings search'
+KEYWORDS = ["cpu", "gpu", "ram", "disk", "bios", "motherboard", "temperature", "specs", "fans",
+            "battery health"]
 USAGE = "hw cpu | hw gpu | hw ram | hw storage | hw board | hw report"
 HELP = [
     ("hw cpu", "the processor: model, cores, clock speed and features"),

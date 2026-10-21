@@ -27,6 +27,8 @@ import _core
 NAME = "volume"
 ALIASES = ["vm", "vol"]
 SUMMARY = "Alter system and per-app volume"
+# extra words people use, for 'settings search'
+KEYWORDS = ["sound", "audio", "mute", "loud", "quiet", "mixer", "app volume", "speakers"]
 USAGE = "type vm ls, or 'volume list'. Change volume by typing 'volume <id> <0-100>' (id 0 = system; vm 3 50 = source 3 to 50%)"
 HELP = [
     ("vm ls", "list every audio source with its id (0 is the system)"),

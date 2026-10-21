@@ -29,6 +29,8 @@ import _core
 NAME = "apps"
 ALIASES = ["app"]
 SUMMARY = "List and uninstall installed apps"
+# extra words people use, for 'settings search'
+KEYWORDS = ["install", "uninstall", "programs", "software", "remove app", "store"]
 USAGE = "apps ls | apps rm <id>"
 HELP = [
     ("apps ls", "list installed apps, alphabetical, with ids"),

@@ -37,6 +37,8 @@ import _core
 NAME = "location"
 ALIASES = ["lc"]
 SUMMARY = "Location services, app access, and the override"
+# extra words people use, for 'settings search'
+KEYWORDS = ["gps", "privacy", "geolocation", "where am i"]
 USAGE = ("lc | lc why | lc on|off | lc access on|off | lc apps [<id> on|off] | lc recent | "
          "lc override on|off | add --json to lc, lc why or lc apps for JSON")
 HELP = [

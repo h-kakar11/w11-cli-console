@@ -37,6 +37,8 @@ import _net
 NAME = "hotspot"
 ALIASES = ["hs", "mobilehotspot"]
 SUMMARY = "Share this PC's internet as a Wi-Fi hotspot"
+# extra words people use, for 'settings search'
+KEYWORDS = ["tethering", "share internet", "mobile hotspot", "wifi sharing"]
 USAGE = ("hs on|off | hs status | hs name <name> | hs password [<new>] | hs band 2.4|5|any | "
          "hs devices | hs from | hs on <id> | hs security <kind> | hs sleep on|off | hs over wifi|bluetooth")
 HELP = [
