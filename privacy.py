@@ -44,9 +44,9 @@ import _win
 NAME = "privacy"
 ALIASES = ["priv", "perm", "permissions"]
 SUMMARY = "App permissions: camera, microphone, location and more"
-USAGE = ("priv | priv now | priv recent [days] | priv <permission> [on|off | <id> [on|off] | desktop|device [on|off]] | "
-         "priv why <permission> [<id>] | priv app <text> [off] | priv sensitive | priv general [<setting> [on|off]] | "
-         "priv open [<page>]")
+USAGE = ("priv | priv now | priv recent [days] | "
+         "priv <permission> [on|off | <id> [on|off] | desktop|device [on|off]] | priv why <permission> [<id>] | "
+         "priv app <text> [off] | priv sensitive | priv general [<setting> [on|off]] | priv open [<page>]")
 HELP = [
     ("priv", "every permission: who may use it, and what is using it right now"),
     ("priv now", "what is using your camera, microphone, location or screen this second"),
@@ -491,7 +491,8 @@ def _find_app(cap, word):
         for app in apps:
             if app["id"] == int(word):
                 return app
-        raise PrivacyError(f"no app with id {word} for {cap['title'].lower()}. Run 'priv {cap['word']}' to see them.", 2)
+        raise PrivacyError(f"no app with id {word} for {cap['title'].lower()}. "
+                           f"Run 'priv {cap['word']}' to see them.", 2)
     lowered = word.lower()
     matches = [app for app in apps if lowered in (app["name"].lower(), app["where"].lower())]
     if len(matches) == 1:
@@ -613,7 +614,8 @@ def _overview(options):
         lines.append(_net.YELLOW + "set by a policy (marked *): " + ", ".join(cap["title"] for cap in managed)
                      + ". 'priv why <permission>' says what that means." + _net.RESET)
         lines.append("")
-    lines.append(f"{'NO.':<5}{'PERMISSION':<22}{'YOU':<10}{'THIS PC':<10}{'CAN USE':<10}{'USED IN 7 DAYS':<16}RIGHT NOW")
+    lines.append(f"{'NO.':<5}{'PERMISSION':<22}{'YOU':<10}{'THIS PC':<10}{'CAN USE':<10}"
+                 f"{'USED IN 7 DAYS':<16}RIGHT NOW")
     for cap in caps:
         summary = summaries[cap["id"]]
         now = ", ".join(app["name"] for app in summary["in_use"][:2])
@@ -627,7 +629,8 @@ def _overview(options):
                      f"{recent:<16}{now or 'nobody'}" + _net.RESET)
     lines += ["", "Type the name to see one: priv camera. The first switch that says no wins: a policy, then this PC,",
               "then you (all apps), then desktop programs, then the app itself.",
-              "next: priv now | priv recent | priv camera | priv why camera | priv app <text> | priv general | priv help"]
+              "next: priv now | priv recent | priv camera | priv why camera | priv app <text> | priv general | "
+              "priv help"]
     print("\n".join(lines))
     return 0
 
@@ -699,12 +702,15 @@ def _recent_cmd(words, options):
         when = "in use now" if app["in_use"] else _fmt(last)
         print(_color_for(access, app["in_use"]) + f"{when:<18}{cap['title'][:20]:<22}{app['name'][:32]:<34}"
               f"{access['label']}" + _net.RESET)
-    print(f"\n{len(uses)} use(s). Windows keeps only the latest use of each permission by each app, not a full history.")
+    print(f"\n{len(uses)} use(s). Windows keeps only the latest use of each permission by each app, "
+          "not a full history.")
 
 
 def _names_text(apps, limit=10):
     names = [app["name"] for app in apps]
-    return ", ".join(names[:limit]) + (f" and {len(names) - limit} more" if len(names) > limit else "") if names else "none"
+    if not names:
+        return "none"
+    return ", ".join(names[:limit]) + (f" and {len(names) - limit} more" if len(names) > limit else "")
 
 
 def _sensitive_cmd(options):
@@ -745,7 +751,8 @@ def _show_location(cap, options):
         return
     block = _top_block(cap)
     _net.render("Location (priv location)", [
-        ("switches", [("you (all apps)", _switch_word(cap, "user")), ("this PC (all users)", _switch_word(cap, "device")),
+        ("switches", [("you (all apps)", _switch_word(cap, "user")),
+                      ("this PC (all users)", _switch_word(cap, "device")),
                       ("blocked for all apps", f"yes, by {LEVEL_TITLES[block['level']]}" if block else "no")]),
         ("apps", [("can use it", f"{summary['can_use']} of {summary['total']}"),
                   ("in use now", _names_text(summary["in_use"]) if summary["in_use"] else "nobody"),
@@ -810,7 +817,8 @@ def _show_app(cap, app, options):
     if app["stale"]:
         use_text = "marked as in use, but the program is not running"
     _net.render(f"{app['name']} and the {cap['title'].lower()}", [
-        ("app", [("kind", _app_kind(app)), ("where", app["where"] + (" (file not found)" if installed is False else ""))]),
+        ("app", [("kind", _app_kind(app)),
+                 ("where", app["where"] + (" (file not found)" if installed is False else ""))]),
         ("access", [("its own switch", STATE_WORDS.get(app["value"], "not set: follows all apps")),
                     ("can use it now", ("yes" if access["allowed"] else "no") + f"  ({access['label']})"),
                     ("last used", use_text)]),
@@ -1027,7 +1035,8 @@ def _app_cmd(words, options):
         for app in cap["apps"]:
             if text in f"{app['name']} {app['where']}".lower():
                 groups.setdefault((app["kind"], app["family"]), []).append((cap, app))
-    ordered = sorted(groups.values(), key=lambda entries: (entries[0][1]["name"].lower(), entries[0][1]["where"].lower()))
+    ordered = sorted(groups.values(),
+                     key=lambda entries: (entries[0][1]["name"].lower(), entries[0][1]["where"].lower()))
     if off:
         return _app_off(text, ordered, options)
     if options["json"]:
@@ -1048,7 +1057,8 @@ def _app_cmd(words, options):
         for cap, entry in entries:
             access = _access(cap, entry)
             used = "in use now" if entry["in_use"] else _fmt(entry["stopped"] or entry["started"])
-            print(_color_for(access, entry["in_use"]) + f"  {cap['title'][:20]:<22}{access['label']:<34}{used}" + _net.RESET)
+            print(_color_for(access, entry["in_use"]) + f"  {cap['title'][:20]:<22}{access['label']:<34}{used}"
+                  + _net.RESET)
         print()
     print(f"{len(ordered)} app(s). 'priv app <text> off' blocks one app from everything it can use.")
 
@@ -1210,7 +1220,8 @@ def _general_show(item, options):
 
 def _managed_note(item):
     return ("Settings may now say some settings are managed by your organisation. Windows applies policy at its "
-            "next refresh, or run 'gpupdate /force' to apply it now. Group Policy or device management can set it back.")
+            "next refresh, or run 'gpupdate /force' to apply it now. Group Policy or device management can "
+            "set it back.")
 
 
 def _general_toggle(item, on, options):
@@ -1221,8 +1232,8 @@ def _general_toggle(item, on, options):
     if row["state"] == ("on" if on else "off") and row["set_by"] == "your choice":
         print(f"{item['title']} is already {'on' if on else 'off'}.")
         return
-    if on and not _core.confirm(f"Turn {item['title']} on? It {item['what']}. To undo: 'priv general {item['word']} off'. "
-                                "[y/N]: ", options["yes"]):
+    if on and not _core.confirm(f"Turn {item['title']} on? It {item['what']}. "
+                                f"To undo: 'priv general {item['word']} off'. [y/N]: ", options["yes"]):
         print("cancelled")
         return
     _win.reg_write(item["hive"], item["path"], item["value"], item["on"] if on else item["off"], winreg.REG_DWORD)
@@ -1303,7 +1314,8 @@ def _activity_set(choice, options):
 # ======================================================================
 def _open_cmd(words, options):
     if len(words) > 1:
-        raise PrivacyError("usage: priv open [<permission>|general|diagnostics|activity|speech|inking|voice|background]", 2)
+        raise PrivacyError("usage: priv open [<permission>|general|diagnostics|activity|speech|inking|voice|"
+                           "background]", 2)
     if not words:
         page, label = "privacy", "Privacy & security"
     else:

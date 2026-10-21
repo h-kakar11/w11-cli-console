@@ -44,7 +44,6 @@ from datetime import datetime, timedelta, timezone
 
 import _core
 import _net
-import _probe
 import _win
 
 # ======================================================================
@@ -1084,7 +1083,7 @@ def _install(words, options):
     bad = [row for row in _as_list(download.get("Updates")) if row.get("ResultCode") not in (2, 3)]
     for row in bad:
         _note(options, _result_line({"title": row.get("Title")}, row.get("ResultCode"), row.get("HResult"), False))
-    _note(options, f"installing... (this can take a long time; Ctrl+C does not stop Windows once it is installing)")
+    _note(options, "installing... (this can take a long time; Ctrl+C does not stop Windows once it is installing)")
     install = _wua(PS_INSTALL, LONG_TIMEOUT, env)[0]
     by_id = {u["update_id"].lower(): u for u in chosen}
     results, failures, restart = [], 0, bool(install.get("RebootRequired"))
@@ -1105,7 +1104,7 @@ def _install(words, options):
     missing = [by_id[i.lower()] for i in _as_list(install.get("Missing")) if i.lower() in by_id]
     for update in missing:
         _note(options, _net.YELLOW + f"  no longer pending    {update['title']}" + _net.RESET)
-    restart = restart or bool(_restart_flags() and any(f["key"] != "files" for f in _restart_flags()))
+    restart = restart or any(f["key"] != "files" for f in _restart_flags())
     done = sum(1 for r in results if r["result_code"] in (2, 3))
     _note(options, f"\n{done} of {len(chosen)} update(s) installed" + (f", {failures} failed" if failures else "") + ".")
     if restart:

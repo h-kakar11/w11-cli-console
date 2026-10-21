@@ -218,6 +218,8 @@ def _split(text):
         else:
             current.append(char)
     entries.append("".join(current))
+    if len(entries) > 1 and entries[-1] == "":
+        entries.pop()  # a PATH ending in ';' is normal, and not an empty entry
     return entries
 
 
@@ -439,7 +441,7 @@ def _unpack(entry):
 
 
 def _snapshot(scope, reason):
-    return {"tool": "w11-cli-console", "saved": datetime.now().isoformat(timespec="seconds"), "scope": scope,
+    return {"tool": "w11-cli-console", "saved": datetime.now().isoformat(timespec="microseconds"), "scope": scope,
             "reason": reason, "computer": os.environ.get("COMPUTERNAME") or "",
             "variables": {name: _pack(value, kind) for name, (value, kind) in _read_scope(scope).items()}}
 
@@ -457,7 +459,7 @@ def _backup_folder(create):
 def _save_backup(scope, reason):
     """Save the whole scope; returns the file's path. A backup that cannot be saved stops the change."""
     folder = _backup_folder(create=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")  # microseconds: backups in one second still sort in order
     name, counter = f"env-{stamp}-{scope}.json", 2
     while (folder / name).exists():
         name = f"env-{stamp}-{scope}-{counter}.json"
@@ -599,7 +601,8 @@ def _valid_name(name):
 
 
 def _valid_value(value):
-    """Raises for a value Windows cannot hold; returns the warnings to show before asking."""
+    """Raises for a value Windows cannot hold; returns (notes, doubts): notes are shown, doubts are shown and also
+    make the page ask, even for a new variable."""
     if value == "":
         raise EnvError("an empty value sets nothing useful. Use 'env rm <NAME>' to delete a variable.", 2)
     if len(value) > MAX_VALUE:
@@ -607,14 +610,14 @@ def _valid_value(value):
     if any(ord(char) < 32 and char != "\t" for char in value):
         raise EnvError("the value contains a line break or control character, which is almost always a paste "
                        "mistake. Nothing was changed.", 2)
-    warnings = []
+    notes, doubts = [], []
     if len(value) > LEGACY_LIMIT:
-        warnings.append(f"note: this value is {len(value):,} characters; some older programs cut a value at "
-                        f"{LEGACY_LIMIT:,}.")
+        notes.append(f"note: this value is {len(value):,} characters; some older programs cut a value at "
+                     f"{LEGACY_LIMIT:,}.")
     if any(LOST_SLASHES.match(part.strip().strip('"')) for part in _split(value)):
-        warnings.append("note: a part of this value looks like a path whose backslashes were lost (the console treats "
-                        'a backslash outside quotes as an escape). Put paths in quotes, e.g. env set X "C:\\Tools".')
-    return warnings
+        doubts.append("note: a part of this value looks like a path whose backslashes were lost (the console treats "
+                      'a backslash outside quotes as an escape). Put paths in quotes, e.g. env set X "C:\\Tools".')
+    return notes, doubts
 
 
 def _kind_for(value, existing_kind):
@@ -877,7 +880,7 @@ def _set_by_id(words, options):
 
 def _set_value(name, value, scope, options):
     _valid_name(name)
-    warnings = _valid_value(value)
+    notes, doubts = _valid_value(value)
     saved = _read_scope(scope)
     found = _existing(saved, name)
     spelling = found[0] if found else name
@@ -887,10 +890,10 @@ def _set_value(name, value, scope, options):
             _core.print_json(_result("set", scope, []))
         return 0
     if spelling.lower() in TEMP_NAMES and not _is_dir(_expand(value, _lookup())[0]):
-        warnings.append(f"note: the folder {value} does not exist. Programs that use {spelling} will fail until it does.")
+        doubts.append(f"note: the folder {value} does not exist. Programs that use {spelling} will fail until it does.")
     kind = _kind_for(value, found[2] if found else None)
     _need_admin_for(scope)
-    for warning in warnings:
+    for warning in notes + doubts:
         _say(options, warning)
     old = _text(found[1]) if found else None
     if _protected(spelling):
@@ -899,7 +902,7 @@ def _set_value(name, value, scope, options):
         if not _typed_yes(spelling, reason, options):
             _say(options, "cancelled")
             return 0
-    elif found or scope == "system" or warnings:
+    elif found or scope == "system" or doubts:
         who = ("Every user and service on this PC will see this change. " if scope == "system" else "")
         if found:
             question = (f"Replace {_label(scope)} variable {spelling}? Now: {_cut(old, 60)}. New: {_cut(value, 60)}. "

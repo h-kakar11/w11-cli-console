@@ -304,6 +304,7 @@ def _declare():
 
     _declared = types.SimpleNamespace(
         comtypes=comtypes, GUID=GUID, PROPERTYKEY=PROPERTYKEY, PROPVARIANT=PROPVARIANT,
+        IPropertyStore=IPropertyStore, IMMDevice=IMMDevice, IMMDeviceCollection=IMMDeviceCollection,
         IMMDeviceEnumerator=IMMDeviceEnumerator, IAudioEndpointVolume=IAudioEndpointVolume,
         IAudioMeterInformation=IAudioMeterInformation, IAudioClient=IAudioClient, IPolicyConfig=IPolicyConfig,
         CLSID_MMDeviceEnumerator=GUID("{BCDE0395-E52F-467C-8E3D-C4579291692E}"),

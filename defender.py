@@ -436,3 +436,583 @@ SWITCHES = {spec.key: spec for spec in [
            policy="Windows Defender Exploit Guard\\Controlled Folder Access\\EnableControlledFolderAccess"),
 ]}
 SWITCH_ORDER = list(SWITCHES)
+
+
+# ======================================================================
+# THE PICTURE — what Windows says, turned into one dict that the status, 'def why' and --json all use
+# ======================================================================
+def _services():
+    return {name: _net.service_state(name) for name, _ in SERVICES}
+
+
+def _policy_values():
+    """Every value under the Defender policy key, as {'Real-Time Protection\\DisableRealtimeMonitoring': 1, ...}."""
+    found = {}
+
+    def walk(path, label):
+        for name, (value, _) in _win.reg_values(_win.HKLM, path).items():
+            found[label + name] = value
+        for sub in _win.reg_subkeys(_win.HKLM, path):
+            walk(path + "\\" + sub, label + sub + "\\")
+
+    walk(POLICY_KEY, "")
+    return found
+
+
+def _managed_by():
+    """Plain reasons an organisation manages this PC (the same test location.py uses); empty if it does not."""
+    reasons = []
+    domain = os.environ.get("USERDNSDOMAIN")
+    if domain:
+        reasons.append(f"joined to the domain {domain}")
+    for enrollment in _win.reg_subkeys(_win.HKLM, MDM_ENROLLMENTS):
+        provider = _net.reg_read(f"{MDM_ENROLLMENTS}\\{enrollment}", "ProviderID")
+        if provider and provider not in WINDOWS_AUTHORITIES:
+            reasons.append(f"enrolled in device management ({provider})")
+    return reasons
+
+
+def _products(reading):
+    """Other antivirus products registered with Windows Security Center. productState is read the way third-party
+    tools read it (0x1000 = on, 0x10 = definitions out of date); Microsoft does not document it."""
+    found = []
+    for row in reading.rows("products"):
+        name = str(row.get("displayName") or "")
+        if not name or "defender" in name.lower():
+            continue
+        state = row.get("productState")
+        known = isinstance(state, int)
+        found.append({"name": name, "on": bool(state & 0x1000) if known else None,
+                      "up_to_date": not state & 0x10 if known else None, "product_state": state})
+    return found
+
+
+def _scan_info(status, kind):
+    end = status.get(f"{kind}ScanEndTime")
+    when = _moment(end)
+    if when is None:
+        return {"last": None, "age_days": None}
+    age = status.get(f"{kind}ScanAge")
+    return {"last": end, "age_days": age if isinstance(age, int) and age != NEVER_AGE else _days_since(when)}
+
+
+def _signatures(status):
+    updated = status.get("AntivirusSignatureLastUpdated")
+    age = status.get("AntivirusSignatureAge")
+    if not isinstance(age, int) or age == NEVER_AGE:
+        age = _days_since(_moment(updated))
+    return {"version": status.get("AntivirusSignatureVersion"), "updated": updated if _moment(updated) else None,
+            "age_days": age, "engine": status.get("AMEngineVersion"), "product": status.get("AMProductVersion"),
+            "out_of_date": status.get("DefenderSignaturesOutOfDate")}
+
+
+def _schedule(prefs):
+    day = prefs.get("ScanScheduleDay")
+    kind = prefs.get("ScanParameters")
+    day = int(day) if isinstance(day, (int, str)) and str(day).isdigit() else None
+    return {"day": DAY_NAMES[day] if day is not None and day < len(DAY_NAMES) else None,
+            "time": prefs.get("ScanScheduleTime") or None,
+            "type": SCAN_TYPE_NAMES.get(int(kind)) if str(kind).isdigit() else None,
+            "randomized": prefs.get("RandomizeScheduleTaskTimes")}
+
+
+def _picture():
+    reading = _read(["status", "prefs", "products", "threats"])
+    status, prefs = reading.row("status"), reading.row("prefs")
+    threats = reading.rows("threats")
+    products = _products(reading)
+    mode = status.get("AMRunningMode") or None
+    policy = _policy_values()
+    protection = {key: spec.state(status, prefs) for key, spec in SWITCHES.items()}
+    protection["tamper"] = _onoff(status.get("IsTamperProtected"))
+    unavailable = {}
+    for name, label in (("status", "status"), ("prefs", "protection settings"), ("threats", "threat list")):
+        if reading.failed(name):
+            unavailable[label] = reading.reason(name)
+    return {
+        "readable": bool(status), "status_error": reading.reason("status"),
+        "mode": mode, "passive": bool(mode) and any(word in mode.lower() for word in PASSIVE_WORDS),
+        "enabled": status.get("AntivirusEnabled"), "other_products": products,
+        "other_active": [item["name"] for item in products if item["on"]],
+        "protection": protection, "signatures": _signatures(status),
+        "scans": {"quick": _scan_info(status, "Quick"), "full": _scan_info(status, "Full"), "schedule": _schedule(prefs)},
+        "threats": {"active": sum(1 for item in threats if item.get("IsActive")), "known": len(threats)},
+        "services": _services(), "policy": {"values": len(policy), "set": policy, "managed_by": _managed_by()},
+        "reboot_required": status.get("RebootRequired"), "smart_app_control": status.get("SmartAppControlState"),
+        "unavailable": unavailable, "findings": [], "verdict": None,
+    }
+
+
+def _finding(level, key, text, fix=None):
+    return {"level": level, "key": key, "text": text, "fix": fix}
+
+
+def _judge(p):
+    """Fills p['findings'] and p['verdict']. 'bad' and 'warn' need attention; 'info' is worth knowing."""
+    out = []
+    protection, sig, scans, services = p["protection"], p["signatures"], p["scans"], p["services"]
+    others = p["other_active"]
+    in_charge = p["readable"] and p["enabled"] is not False and not p["passive"]
+    if not p["readable"]:
+        if services.get("WinDefend") == "RUNNING":
+            out.append(_finding("warn", "unreadable", "Windows Defender is running, but its status could not be read"
+                                f" ({p['status_error'] or 'no reason given'}).", "def help"))
+        elif others:
+            out.append(_finding("info", "other", f"{', '.join(others)} is the active antivirus, so Windows Defender "
+                                "is not running. That is normal."))
+        else:
+            out.append(_finding("bad", "service", "Windows Defender's service is not running, and no other antivirus "
+                                "is registered. This PC may be unprotected.", "svc WinDefend on"))
+    elif p["enabled"] is False:
+        if others:
+            out.append(_finding("info", "other", f"Windows Defender is off because {', '.join(others)} is the active "
+                                "antivirus. That is normal."))
+        else:
+            out.append(_finding("bad", "disabled", "Windows Defender's antivirus is turned off, and no other antivirus "
+                                "is registered.", "def open threats"))
+    elif p["passive"]:
+        who = ", ".join(others) if others else "another product"
+        out.append(_finding("info", "passive", f"Windows Defender is in {p['mode']}: {who} is the antivirus in charge, "
+                            "so protection is managed there."))
+    if in_charge:
+        if protection["realtime"] == "off":
+            out.append(_finding("bad", "realtime", "Real-time protection is off. Files are not scanned when they are "
+                                "opened, downloaded or run.", "def on realtime"))
+        for key, text in (("behavior", "Behaviour monitoring is off."), ("downloads", "Downloads and attachments are not "
+                          "being scanned."), ("cloud", "Cloud-delivered protection is off.")):
+            if protection[key] == "off":
+                out.append(_finding("warn", key, text, f"def on {key}"))
+        if protection["samples"] in ("never", "ask"):
+            out.append(_finding("info", "samples", f"Automatic sample submission is '{protection['samples']}': "
+                                "Microsoft gets fewer samples. A privacy choice, not a fault.", "def samples safe"))
+        if protection["tamper"] == "off":
+            out.append(_finding("warn", "tamper", "Tamper Protection is off, so other programs can change these "
+                                "settings.", "def open settings"))
+        age = sig["age_days"]
+        if sig["out_of_date"] or (age is not None and age >= OLD_DAYS):
+            out.append(_finding("bad", "signatures", f"The virus signatures are {_plural(age, 'day') if age is not None else 'out of date'}"
+                                " old.", "def update"))
+        elif age is not None and age >= STALE_DAYS:
+            out.append(_finding("warn", "signatures", f"The virus signatures are {_plural(age, 'day')} old.", "def update"))
+        ages = [item["age_days"] for item in (scans["quick"], scans["full"]) if item["last"]]
+        if not ages:
+            out.append(_finding("warn", "scan", "No scan has been run on this PC yet.", "def scan"))
+        elif min(ages) >= SCAN_OLD_DAYS:
+            out.append(_finding("warn", "scan", f"The last scan was {_plural(min(ages), 'day')} ago.", "def scan"))
+        if p["threats"]["active"]:
+            out.append(_finding("bad", "threats", f"{_plural(p['threats']['active'], 'threat')} found by Defender "
+                                "{is} still active.".replace("{is}", "is" if p["threats"]["active"] == 1 else "are"),
+                                "def threats"))
+        for key, label in (("pua", "Blocking of unwanted apps"), ("network", "Network protection"),
+                           ("folders", "Controlled folder access")):
+            if protection[key] == "off":
+                out.append(_finding("info", key, f"{label} is off. It is optional extra protection.", f"def on {key}"))
+    if p["reboot_required"]:
+        out.append(_finding("warn", "reboot", "Windows Defender needs a restart to finish an update.", None))
+    if services.get("SecurityHealthService") not in (None, "RUNNING", "UNKNOWN") and p["readable"]:
+        out.append(_finding("warn", "securityhealth", "The Windows Security service is not running, so the Windows "
+                            "Security app cannot show the status.", "svc SecurityHealthService on"))
+    if p["policy"]["values"]:
+        out.append(_finding("info", "policy", f"{_plural(p['policy']['values'], 'Defender setting')} come from a policy "
+                            "(Group Policy or device management), so changes here may be refused or put back."))
+    p["findings"] = out
+    attention = [item for item in out if item["level"] in ("bad", "warn")]
+    if not p["readable"] and others or (p["readable"] and (p["enabled"] is False or p["passive"]) and others):
+        p["verdict"] = "not active"
+    else:
+        p["verdict"] = "needs attention" if attention else "protected"
+    return p
+
+
+def _attention(p):
+    return [item for item in p["findings"] if item["level"] in ("bad", "warn")]
+
+
+LEVEL_COLORS = {"bad": _net.RED, "warn": _net.YELLOW, "info": _net.CYAN, "ok": _net.GREEN}
+
+
+def _verdict_line(p):
+    count = len(_attention(p))
+    if p["verdict"] == "protected":
+        return _net.GREEN + "Windows Defender: protected" + _net.RESET
+    if p["verdict"] == "not active":
+        who = ", ".join(p["other_active"]) or "another product"
+        return _net.CYAN + f"Windows Defender is not the active antivirus: {who} is" + _net.RESET
+    return _net.YELLOW + f"Windows Defender: needs attention ({_plural(count, 'thing')})" + _net.RESET
+
+
+def _public(p):
+    """The picture without the raw policy values, for --json."""
+    out = {key: value for key, value in p.items() if key != "policy"}
+    out["policy"] = {"values": p["policy"]["values"], "managed_by": p["policy"]["managed_by"]}
+    return out
+
+
+def _finding_lines(items):
+    lines = []
+    for item in items:
+        color = LEVEL_COLORS[item["level"]]
+        lines.append(color + f"  {item['text']}" + (f"   fix: {item['fix']}" if item["fix"] else "") + _net.RESET)
+    return lines
+
+
+# ======================================================================
+# SHOWING — the status, and 'def why'
+# ======================================================================
+def _status_cmd(options):
+    p = _judge(_picture())
+    if options["json"]:
+        _core.print_json(_public(p))
+        return 0
+    protection, sig, scans = p["protection"], p["signatures"], p["scans"]
+    rows = []
+    for key in SWITCH_ORDER:
+        spec, state = SWITCHES[key], protection[key]
+        hint = f"   (def {key} {spec.on_word})" if state == "off" and key in ("realtime", "behavior", "downloads", "cloud") else ""
+        rows.append((spec.title, state + hint))
+    rows.append(("tamper protection", protection["tamper"]))
+    schedule = scans["schedule"]
+    scheduled = ("not set" if not schedule["day"] else
+                 "never" if schedule["day"] == "never" else
+                 f"{schedule['day']} at {(schedule['time'] or '?')[:5]}, {schedule['type'] or 'scan'}")
+    sections = [
+        ("protection", rows),
+        ("signatures", [("version", sig["version"]), ("last updated", _when(sig["updated"])),
+                        ("engine", sig["engine"]), ("program", sig["product"])]),
+        ("scans", [("last quick scan", _when(scans["quick"]["last"])), ("last full scan", _when(scans["full"]["last"])),
+                   ("scheduled scan", scheduled)]),
+        ("threats", [("still active", p["threats"]["active"]), ("found before", p["threats"]["known"]),
+                     ("details", "def threats")]),
+        ("this PC", [("mode", p["mode"] or "unknown"),
+                     ("other antivirus", [f"{i['name']} ({'on' if i['on'] else 'off'})" for i in p["other_products"]] or "none"),
+                     ("services", ", ".join(f"{name} {state.lower()}" for name, state in p["services"].items())),
+                     ("set by policy", "yes" if p["policy"]["values"] else "no"),
+                     ("managed by", p["policy"]["managed_by"] or "nobody"),
+                     ("firewall", "fw shows it")]),
+        ("next", [("def why", "what is wrong, with the fix for each"), ("def scan", "start a quick scan"),
+                  ("def help", "everything this page can do")]),
+    ]
+    attention = _finding_lines(_attention(p))
+    _net.render(_verdict_line(p) + ("\n" + "\n".join(attention) if attention else ""), sections)
+    for label, reason in p["unavailable"].items():
+        print(f"not available: {label} ({reason})")
+    return 0
+
+
+def _why_cmd(options):
+    p = _judge(_picture())
+    if options["json"]:
+        _core.print_json({"verdict": p["verdict"], "findings": p["findings"], "unavailable": p["unavailable"]})
+        return 0
+    print(_verdict_line(p))
+    need = _attention(p)
+    other = [item for item in p["findings"] if item["level"] == "info"]
+    if not need:
+        print("\nNothing needs attention.")
+    for number, item in enumerate(need, start=1):
+        print(LEVEL_COLORS[item["level"]] + f"\n {number}. {item['text']}" + _net.RESET)
+        if item["fix"]:
+            print(f"    fix: {item['fix']}" + ("   (administrator)" if item["fix"].startswith(("def on", "svc")) else ""))
+    if other:
+        print(_net.CYAN + "\nGood to know" + _net.RESET)
+        for line in _finding_lines(other):
+            print(line)
+    for label, reason in p["unavailable"].items():
+        print(f"not available: {label} ({reason})")
+    return 0
+
+
+# ======================================================================
+# EVENTS — the Defender operational log: scans, threats, protection turned off, updates
+# ======================================================================
+def _events(ids, days, limit=EVENT_LIMIT):
+    """Defender events, newest first: [{'id', 'time', 'message'}]."""
+    reading = _read(["events"], env={"W11_IDS": ",".join(str(i) for i in ids), "W11_DAYS": str(int(days)),
+                                     "W11_LIMIT": str(int(limit))})
+    if reading.failed("events"):
+        raise DefenderError(f"could not read the Defender event log ({reading.reason('events')})")
+    return [{"id": int(row.get("Id") or 0), "time": row.get("Time"), "message": row.get("Message") or ""}
+            for row in reading.rows("events")]
+
+
+def _detail(event):
+    """The one useful fact in an event's message."""
+    message = event["message"]
+    if event["id"] == 5007:
+        old = re.search(r"Old value:\s*(.+)", message)
+        new = re.search(r"New value:\s*(.+)", message)
+        if new:
+            name = re.split(r"[\\=]", new.group(1).split(" = ")[0])[-1].strip() if " = " in new.group(1) else new.group(1)
+            return f"{name}: {(old.group(1).split(' = ')[-1].strip() if old else '?')} -> {new.group(1).split(' = ')[-1].strip()}"
+    found = re.search(r"(?:Name|Threat name):\s*(.+)", message)
+    if found and event["id"] in (1006, 1007, 1008, 1015, 1116, 1117, 1118, 1119):
+        return found.group(1).strip()
+    found = re.search(r"Scan Parameters:\s*(.+)", message)
+    if found and event["id"] in SCAN_EVENTS:
+        return found.group(1).strip()
+    found = re.search(r"(?:Current|New) (?:security intelligence|signature) version:\s*(\S+)", message)
+    if found:
+        return f"version {found.group(1)}"
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    return lines[0][:80] if lines else ""
+
+
+def _events_cmd(words, options):
+    days, ids, label = EVENT_DEFAULT_DAYS, None, "everything"
+    for word in words:
+        if word.isdigit() and 1 <= int(word) <= 365:
+            days = int(word)
+        elif word.lower() in EVENT_GROUPS and ids is None:
+            ids, label = EVENT_GROUPS[word.lower()], word.lower()
+        else:
+            raise DefenderError("usage: def events [days] [scans|threats|protection|updates|settings]", 2)
+    if ids is None:
+        ids = tuple(sorted(i for group in EVENT_GROUPS.values() for i in group))
+    events = _events(ids, days)
+    rows = []
+    for event in events:
+        text, level = EVENT_TEXT.get(event["id"], (f"event {event['id']}", "info"))
+        rows.append({"time": event["time"], "id": event["id"], "what": text, "level": level, "detail": _detail(event)})
+    if options["json"]:
+        _core.print_json({"days": days, "filter": label, "events": rows})
+        return 0
+    if not rows:
+        print(f"Defender logged no {label} events in the last {_plural(days, 'day')}.")
+        return 0
+    for row in rows:
+        when = _moment(row["time"])
+        print(LEVEL_COLORS[row["level"]] + f"{when:%Y-%m-%d %H:%M}  {row['what']:<48}{row['detail']}".rstrip() + _net.RESET)
+    print(f"\n{_plural(len(rows), 'event')} in the last {_plural(days, 'day')} ({label}). "
+          "'def events 30 protection' looks further back; 'def events threats' narrows it.")
+    return 0
+
+
+# ======================================================================
+# SCANS — started in the background, so the person gets the prompt back
+# ======================================================================
+def _mpcmdrun():
+    """MpCmdRun.exe: the newest copy in the platform folder, else the one in Program Files."""
+    platform = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "Microsoft", "Windows Defender", "Platform")
+    try:
+        versions = sorted(os.listdir(platform), key=lambda v: [int(n) for n in re.findall(r"\d+", v)], reverse=True)
+    except OSError:
+        versions = []
+    for version in versions:
+        path = os.path.join(platform, version, "MpCmdRun.exe")
+        if os.path.isfile(path):
+            return path
+    return os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Windows Defender", "MpCmdRun.exe")
+
+
+def _pid_alive(pid):
+    try:
+        import psutil
+        return bool(pid) and psutil.pid_exists(pid)
+    except ImportError:
+        return None
+
+
+def _scan_runs(days=30, limit=200):
+    """Scans from the event log, newest first: started, how it ended, which kind. Pairs the events by scan id."""
+    runs, order = {}, []
+    for event in reversed(_events(SCAN_EVENTS, days, limit)):
+        found = re.search(r"Scan ID:\s*(\{?[0-9A-Fa-f-]{8,}\}?)", event["message"])
+        key = found.group(1).strip("{}").lower() if found else f"event-{event['id']}-{event['time']}"
+        run = runs.setdefault(key, {"started": None, "ended": None, "result": None, "type": None})
+        kind = re.search(r"Scan Parameters:\s*(.+)", event["message"])
+        if kind:
+            run["type"] = kind.group(1).strip().lower()
+        if event["id"] == 1000:
+            run["started"] = event["time"]
+            order.append(key)
+        else:
+            run["ended"] = event["time"]
+            run["result"] = {1001: "finished", 1002: "stopped before it finished", 1005: "failed"}.get(event["id"])
+            if key not in order:
+                order.append(key)
+    out = []
+    for key in reversed(order):
+        run = runs[key]
+        start, end = _moment(run["started"]), _moment(run["ended"])
+        run["seconds"] = int((end - start).total_seconds()) if start and end else None
+        run["result"] = run["result"] or ("running" if start and (datetime.now() - start).days < 1 else "unknown")
+        out.append(run)
+    return out
+
+
+def _duration(seconds):
+    if seconds is None:
+        return "-"
+    minutes, secs = divmod(seconds, 60)
+    return f"{minutes} min {secs} s" if minutes else f"{secs} s"
+
+
+def _scans_cmd(words, options):
+    if len(words) > 1 or (words and not words[0].isdigit()):
+        raise DefenderError("usage: def scans [n]", 2)
+    count = int(words[0]) if words else 10
+    runs = _scan_runs()[:count]
+    if options["json"]:
+        _core.print_json({"scans": runs})
+        return 0
+    if not runs:
+        print("Defender logged no scans in the last 30 days.")
+        return 0
+    print(f"{'STARTED':<18}{'KIND':<14}{'RESULT':<28}TOOK")
+    for run in runs:
+        start = _moment(run["started"] or run["ended"])
+        color = {"finished": _net.GREEN, "running": _net.CYAN}.get(run["result"], _net.YELLOW)
+        print(color + f"{start:%Y-%m-%d %H:%M}".ljust(18) + f"{(run['type'] or 'scan')[:12]:<14}{run['result']:<28}"
+              f"{_duration(run['seconds'])}" + _net.RESET)
+    return 0
+
+
+def _scan_running():
+    """Whether a scan is going now: the one this page started (its saved process), else the newest log events."""
+    saved = _win.load_json(SCAN_FILE, {}) or {}
+    if saved.get("pid") and _pid_alive(saved["pid"]):
+        return {"running": True, "started": saved.get("started"), "kind": saved.get("kind"), "by": "this page"}
+    for run in _scan_runs(days=2, limit=40)[:1]:
+        if run["result"] == "running":
+            return {"running": True, "started": run["started"], "kind": run["type"], "by": "Windows"}
+    return {"running": False, "started": None, "kind": None, "by": None}
+
+
+def _scan_status(options):
+    now = _scan_running()
+    last = next((run for run in _scan_runs() if run["result"] != "running"), None)
+    if options["json"]:
+        _core.print_json({"running": now["running"], "started": now["started"], "kind": now["kind"],
+                          "started_by": now["by"], "last": last})
+        return 0
+    if now["running"]:
+        print(_net.CYAN + f"a {now['kind'] or 'scan'} is running (started {_win.ago(now['started'])}, by {now['by']}). "
+              "'def scan stop' ends it." + _net.RESET)
+    else:
+        print("no scan is running.")
+    if last:
+        print(f"last scan: {last['type'] or 'scan'}, {last['result']} {_win.ago(last['ended'] or last['started'])}"
+              f", took {_duration(last['seconds'])}.")
+    return 0
+
+
+def _launch_script(kind, custom):
+    command = f"Start-MpScan -ScanType {kind}" + (" -ScanPath $env:W11_SCAN_PATH" if custom else "")
+    return ("$ErrorActionPreference = 'Stop'; try { " + command +
+            " } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }")
+
+
+def _start_scan(kind_word, path):
+    """Start Start-MpScan in a hidden PowerShell that outlives this command. Returns (pid, finished_already)."""
+    kind = "CustomScan" if path else ("FullScan" if kind_word == "full" else "QuickScan")
+    encoded = base64.b64encode(_launch_script(kind, bool(path)).encode("utf-16-le")).decode("ascii")
+    log = _win.data_dir() / SCAN_LOG
+    env = {**os.environ, **({"W11_SCAN_PATH": path} if path else {})}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        with open(log, "w", encoding="utf-8") as err:
+            process = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err, env=env,
+                                       creationflags=flags)
+    except OSError as e:
+        raise DefenderError(f"could not start PowerShell: {e}")
+    deadline = time.monotonic() + LAUNCH_WAIT
+    while process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.25)
+    code = process.poll()
+    if code not in (None, 0):
+        try:
+            text = log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        raise DefenderError(_net.explain(text) if text.strip() else "Windows would not start the scan")
+    return process.pid, code == 0
+
+
+def _scan_cmd(words, options, wait):
+    if words and words[0].lower() == "status" and len(words) == 1:
+        return _scan_status(options)
+    if words and words[0].lower() in ("stop", "cancel") and len(words) == 1:
+        return _scan_stop(options)
+    path = None
+    kind = "quick"
+    if words and words[0].lower() in SCAN_TYPES and len(words) == 1:
+        kind = words[0].lower()
+    elif words:
+        path = " ".join(words)
+        if not os.path.exists(path):
+            raise DefenderError(f"'{path}' is not quick, full, status, stop, or a file or folder that exists", 2)
+        kind = "custom"
+    now = _scan_running()
+    if now["running"]:
+        msg = f"a {now['kind'] or 'scan'} is already running (started {_win.ago(now['started'])}). 'def scan status' shows it."
+        if options["json"]:
+            _core.print_json({"started": False, "reason": "already running", **now})
+        else:
+            print(msg)
+        return 0
+    expect = {"quick": "a quick scan usually takes a few minutes", "full": "a full scan can take an hour or more",
+              "custom": f"scanning {path}"}[kind]
+    if not options["json"]:
+        print(f"starting a {kind} scan: {expect}. The PC stays usable.")
+    pid, finished = _start_scan(kind, path)
+    started = datetime.now().isoformat(timespec="seconds")
+    _win.save_json(SCAN_FILE, {"pid": pid, "started": started, "kind": f"{kind} scan", "path": path})
+    if wait and not finished:
+        _wait_for_scan(pid, options)
+    result = {"started": True, "kind": kind, "path": path, "pid": pid, "finished": finished or wait}
+    if options["json"]:
+        _core.print_json(result)
+    elif finished:
+        print("the scan finished already. 'def threats' shows anything it found.")
+    elif not wait:
+        print("the scan runs in the background. 'def scan status' shows how it is going, 'def scan stop' ends it.")
+    return 0
+
+
+def _wait_for_scan(pid, options):
+    began = time.monotonic()
+    try:
+        while _pid_alive(pid) and time.monotonic() - began < WAIT_LIMIT:
+            time.sleep(WAIT_POLL)
+            if not options["json"] and int(time.monotonic() - began) % 30 < WAIT_POLL:
+                print(f"still scanning ({int(time.monotonic() - began)} s)...")
+    except KeyboardInterrupt:
+        print("\nstopped waiting. The scan keeps running: 'def scan status' shows it.")
+        return
+    if not options["json"]:
+        print("the scan has finished. 'def threats' shows anything it found.")
+
+
+def _scan_stop(options):
+    saved = _win.load_json(SCAN_FILE, {}) or {}
+    ok, text = _net.run_tool([_mpcmdrun(), "-Scan", "-Cancel"], timeout=60)
+    if saved.get("pid") and _pid_alive(saved["pid"]):
+        try:
+            import psutil
+            psutil.Process(saved["pid"]).terminate()
+        except Exception:
+            pass
+    if options["json"]:
+        _core.print_json({"stopped": ok, "detail": text.splitlines()[0] if text else ""})
+    elif ok:
+        print("asked Windows Defender to stop the scan.")
+    else:
+        raise DefenderError(_net.explain(text) if text else "Windows would not stop the scan")
+    return 0
+
+
+def _update_cmd(options):
+    before = _signatures(_read(["status"]).row("status"))
+    if not options["json"]:
+        print("asking Microsoft for the newest signatures (this can take a minute)...")
+    _win.powershell("Update-MpSignature", timeout=300)
+    after = _signatures(_read(["status"]).row("status"))
+    changed = bool(after["version"] and after["version"] != before["version"])
+    if options["json"]:
+        _core.print_json({"before": before, "after": after, "updated": changed})
+    elif changed:
+        print(f"signatures updated: {before['version']} -> {after['version']} ({_when(after['updated'])}).")
+    else:
+        print(f"already up to date: version {after['version']} ({_when(after['updated'])}).")
+    return 0
