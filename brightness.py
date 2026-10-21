@@ -3,6 +3,8 @@ import subprocess
 import sys
 from ctypes import wintypes
 
+import _core
+
 # ======================================================================
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
@@ -183,7 +185,7 @@ def _is_number(text):
         return False
 
 
-def _dispatch(args):
+def _dispatch(args, options):
     sub = args[0].lower()
     arg = args[1] if len(args) > 1 else None
 
@@ -202,19 +204,26 @@ def _dispatch(args):
                 " or run on a laptop panel."
             )
         if sub == "info":
-            print(b.mode)
+            _report(options, "mode", b.mode)
         elif sub == "get":
-            print(b.get())
+            _report(options, "brightness", b.get())
         elif sub == "set":
-            print(b.set(value))
+            _report(options, "brightness", b.set(value))
         elif sub == "up":
-            print(b.set(b.get() + value))
+            _report(options, "brightness", b.set(b.get() + value))
         elif sub == "down":
-            print(b.set(b.get() - value))
+            _report(options, "brightness", b.set(b.get() - value))
 
+
+def _report(options, key, value):
+    if options["json"]:
+        _core.print_json({key: value})
+    else:
+        print(value)
 
 def run(args):
     """Run one brightness command; returns an exit code."""
+    args, options = _core.split_flags(args)
     if not args:
         print(f"error: usage: brightness {USAGE}", file=sys.stderr)
         return 2
@@ -225,7 +234,7 @@ def run(args):
     if _is_number(args[0]):
         args = ["set", *args]
     try:
-        _dispatch(args)
+        _dispatch(args, options)
         return 0
     except BrightnessError as e:
         print(f"error: {e}", file=sys.stderr)

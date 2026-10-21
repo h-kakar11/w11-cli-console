@@ -10,8 +10,13 @@ device: Windows devices, the same list Device Manager shows. Routed from app.py 
     device usb|displays|audio|storage
                                  the devices in one area
     device report                the whole inventory as JSON, for scripts and agents
+    device <id> enable|disable|restart
+                                 turn a device on or off, or restart it (administrator; disable and restart ask first)
+    device driver add <file.inf> install a driver package, which is how a driver is updated (administrator; asks first)
+    device driver rm <id>        remove a device's driver package (administrator; asks first)
 
-Nothing here needs administrator rights. Connected devices are read through the Configuration Manager
+Reading needs no administrator rights. The changes need an administrator terminal, and each one checks
+that before it asks anything. Connected devices are read through the Configuration Manager
 API (cfgmgr32), the same calls Device Manager makes. Devices that are not connected are read from the
 Enum registry key, because the API cannot locate them. Driver packages come from WMI.
 """
@@ -32,7 +37,8 @@ import _net
 NAME = "device"
 ALIASES = ["dvc"]
 SUMMARY = "Devices, their status and drivers (Device Manager)"
-USAGE = "device ls | device <id> | device errors | device drivers | device tree | device search <text>"
+USAGE = ("device ls | device <id> | device <id> enable|disable|restart | device errors | device drivers | "
+         "device driver add <inf>|rm <id> | device tree | device search <text>")
 HELP = [
     ("device ls", "list every device with its id, state and class"),
     ("device <id>", "show one device: its driver, what it plugs into, and its status"),
@@ -40,6 +46,10 @@ HELP = [
     ("device drivers", "driver packages: provider, version, date and file"),
     ("device tree", "devices by what they are plugged into"),
     ("device search <text>", "find by name, class, hardware ID, vendor or driver provider"),
+    ("device <id> enable|disable", "turn a device on or off (administrator)"),
+    ("device <id> restart", "restart a device, such as one that has stopped working (administrator)"),
+    ("device driver add <inf>", "install a driver package: how a driver is updated (administrator)"),
+    ("device driver rm <id>", "remove a device's driver package (administrator)"),
 ]
 TIP = (
     "Ids are numbered by name, so they shift when devices come and go. A name works too. "
@@ -246,6 +256,114 @@ def _row_text(row):
 
 
 ROW_HEADER = f"{'ID':<6}{'NAME':<38}{'CLASS':<20}STATE"
+
+
+# ======================================================================
+# CHANGES — turn a device on or off, restart it, or add or remove its driver package.
+# pnputil does the work: it is the Windows tool for these, and Device Manager makes the same calls.
+# Each change checks for administrator rights before it asks anything, and reads the device back after.
+# ======================================================================
+ACTION_WORDS = {"enable": "enable", "on": "enable", "disable": "disable", "off": "disable", "restart": "restart"}
+ACTION_TEXT = {"enable": "turn on", "disable": "turn off", "restart": "restart"}
+ADD_WORDS = ("add", "install")
+REMOVE_WORDS = ("rm", "remove", "delete", "uninstall")
+# Turning these off can cut off the keyboard, the mouse, the network or the screen, so they ask twice
+CRITICAL_CLASSES = {"SYSTEM", "KEYBOARD", "MOUSE", "HIDCLASS", "NET", "DISPLAY", "MONITOR", "DISKDRIVE",
+                    "HDC", "SCSIADAPTER", "USB", "USBDEVICE", "PROCESSOR", "COMPUTER"}
+
+
+def _pnputil(args):
+    """Runs pnputil and returns its output. Raises DeviceError with Windows' reason if it fails."""
+    try:
+        ok, text = _net.run_tool(["pnputil", *args], timeout=120)
+    except _net.NetError as e:
+        raise DeviceError(str(e))
+    if not ok:
+        raise DeviceError(_net.explain(text))
+    return text
+
+
+def _reread(instance_id):
+    """The device as Windows reports it now, after a change."""
+    for row in _devices():
+        if row["instance_id"].upper() == instance_id.upper():
+            return row
+    return None
+
+
+def _device_action(row, action, options):
+    if action == "enable" and row["state"] == "working":
+        print(f"{row['name']} is already on.")
+        return
+    if action == "disable" and row["state"] == "disabled":
+        print(f"{row['name']} is already off.")
+        return
+    if not row["present"]:
+        raise DeviceError(f"{row['name']} is not connected right now, so Windows cannot change it. "
+                          "'device ls absent' lists devices that are not connected.", 2)
+    _net.need_admin()
+    if action == "disable":
+        if not _core.confirm(f"Turn off {row['name']}? Anything that uses it stops until it is turned on again. "
+                             f"To turn it back on: 'device {row['id']} enable'. [y/N]: ", options["yes"]):
+            print("cancelled")
+            return
+        if (row["class"] or "").upper() in CRITICAL_CLASSES and not _core.confirm(
+                f"{row['name']} is a device this PC may need (keyboard, mouse, network or screen). "
+                "Turn it off anyway? [y/N]: ", options["yes"]):
+            print("cancelled")
+            return
+    if action == "restart" and not _core.confirm(
+            f"Restart {row['name']}? It stops for a moment, and anything using it may fail or reconnect. [y/N]: ",
+            options["yes"]):
+        print("cancelled")
+        return
+    print(f"{ACTION_TEXT[action]} {row['name']}...")
+    _pnputil([f"/{action}-device", row["instance_id"]])
+    now = _reread(row["instance_id"])
+    if now is None:
+        print(f"{row['name']} is no longer listed. Run 'device ls' to check.")
+        return
+    print(f"{row['name']} is now {now['state']}.")
+    if now["problem_text"]:
+        print(f"  {now['problem_text']}")
+
+
+def _driver_add(words, options):
+    if len(words) != 1 or not words[0].lower().endswith(".inf"):
+        raise DeviceError("usage: device driver add <file.inf>. Installing a newer driver is how it is updated.", 2)
+    path = words[0]
+    if not os.path.isfile(path):
+        raise DeviceError(f"no file called {path}", 2)
+    _net.need_admin()
+    if not _core.confirm(f"Install the driver from {os.path.basename(path)}? Windows installs it for every device "
+                         "it matches, and a wrong driver can stop a device working. [y/N]: ", options["yes"]):
+        print("cancelled")
+        return
+    print(f"installing {path}...")
+    print(_pnputil(["/add-driver", path, "/install"]))
+
+
+def _driver_remove(words, options, rows):
+    if len(words) != 1:
+        raise DeviceError("usage: device driver rm <id>", 2)
+    row = _find(words[0], rows)
+    inf = ((_driver_packages().get(row["instance_id"].upper()) or {}).get("inf") or "").lower()
+    if not inf:
+        raise DeviceError(f"Windows does not name a driver package for {row['name']}, so there is nothing to remove.", 2)
+    if not inf.startswith("oem"):
+        raise DeviceError(f"{inf} came with Windows, not from a driver you installed, so it cannot be removed here.", 2)
+    _net.need_admin()
+    if not _core.confirm(f"Remove driver package {inf} ({row['name']})? Windows removes it from every device that uses "
+                         f"it, so {row['name']} may stop working until a driver is installed again. [y/N]: ",
+                         options["yes"]):
+        print("cancelled")
+        return
+    print(f"removing {inf}...")
+    print(_pnputil(["/delete-driver", inf, "/uninstall"]))
+    if inf in {p["inf"].lower() for p in _driver_packages().values() if p.get("inf")}:
+        print(f"Windows still lists {inf} for a device. Run 'device drivers' to check.")
+    else:
+        print(f"removed {inf}.")
 
 
 # ======================================================================
@@ -546,6 +664,12 @@ def run(args):
             _area(word, _devices(), options)
         elif word == "report" and not rest:
             _report(_devices())
+        elif word == "driver" and rest[:1] and rest[0].lower() in ADD_WORDS:
+            _driver_add(rest[1:], options)
+        elif word == "driver" and rest[:1] and rest[0].lower() in REMOVE_WORDS:
+            _driver_remove(rest[1:], options, _devices())
+        elif len(args) == 2 and args[1].lower() in ACTION_WORDS:
+            _device_action(_find(args[0], _devices()), ACTION_WORDS[args[1].lower()], options)
         elif len(args) == 1:
             _inspect(args[0], _devices(), options)
         else:

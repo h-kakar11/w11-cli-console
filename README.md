@@ -18,7 +18,7 @@ py app.py
 | startup | `su`, `start` | Apps that start with Windows |
 | apps | `app` | Installed apps, and uninstalling them |
 | process | `prc` | Running processes, ending them, live system stats |
-| wifi | `net`, `internet`, `wf` | Join Wi-Fi, known networks, and every Wi-Fi setting |
+| wifi | `internet`, `wf` | Join Wi-Fi, known networks, and every Wi-Fi setting |
 | ethernet | `eth`, `lan`, `wired` | Wired network: details, IP, DNS, 802.1X, metered |
 | hotspot | `hs`, `mobilehotspot` | Share this PC's internet as a Wi-Fi hotspot |
 | settings | `menu` | Every setting in one list, and how to open each |
@@ -27,9 +27,10 @@ py app.py
 | services | `svc` | Windows services: list, search, status, dependencies, failures, start, stop, restart, startup type |
 | hardware | `hw` | Processor, graphics, memory, drives, motherboard, BIOS, USB, sensors, and a full report |
 | system | `sys` | Uptime, load, processes, startup programs, power, PATH, inventory, and an overall health check |
-| device | `dvc` | Devices and drivers, as in Device Manager: status, errors, tree, search |
+| device | `dvc` | Devices and drivers, as in Device Manager: status, errors, tree, search, and turning a device on, off or restarting it |
+| firewall | `fw` | Windows Firewall: turn a network profile on or off, list the rules, and turn one rule on or off |
 | events | `evt` | Windows event logs: errors, crashes, shutdowns, boots, timelines, export and watch |
-| netmon | `nm`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
+| netmon | `net`, `net`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
 
 Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 
@@ -189,7 +190,7 @@ lc recent                apps that used location in the last 7 days
 lc override on | off     allow location override (a remote device's location)
 ```
 
-For scripts and AI agents, add `--json` to `lc`, `lc why` or `lc apps` for machine-readable output. If a policy from an organisation (Group Policy or device management) is turning location off, `lc on` refuses and explains why. Only after the PC's owner agrees, `lc on --override-management` from an administrator terminal overrides it. The policy may be set back at the next refresh.
+For scripts and AI agents, add `--json` to `lc`, `lc why` or `lc apps` for machine-readable output. The same goes for `vm ls` and `vm <id>`, `bn get` and `bn info`, `su ls` and `su <id>`, `apps ls`, `prc ls` (the list, not `/verbose`), `dvc` and `fw`. `--yes` answers the confirmations in `su rm`, `apps rm`, `prc kill`, and the `dvc` and `fw` changes. If a policy from an organisation (Group Policy or device management) is turning location off, `lc on` refuses and explains why. Only after the PC's owner agrees, `lc on --override-management` from an administrator terminal overrides it. The policy may be set back at the next refresh.
 
 Location services is the master switch. `lc off` sets the Windows policy "Turn off location" (`DisableLocation` under `HKLM\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors`), the same value `gpedit.msc` writes. `lc on` sets it back to 0. Nothing is deleted. Windows applies policy changes at the next refresh, or run `gpupdate /force` to apply now.
 
@@ -299,9 +300,33 @@ dvc tree                        connected devices, by what they are plugged into
 dvc search VID_1E71             find by name, class, hardware ID, vendor or driver provider
 dvc usb | displays | audio | storage
 dvc report                      the whole inventory as JSON, for scripts and agents
+dvc 12 enable                   turn device 12 on (administrator)
+dvc 12 disable                 turn it off (administrator; asks first, twice for keyboards, mice, network and screens)
+dvc 12 restart                 restart it (administrator; asks first)
+dvc driver add new.inf         install a driver package, which is how a driver is updated (administrator; asks first)
+dvc driver rm 12               remove device 12's driver package (administrator; asks first)
 ```
 
-Nothing here needs administrator rights. "Disabled" means turned off in Device Manager, and "not connected" means the device is known to Windows but is not plugged in or present right now. Changing a device (enable, disable, restart, updating or removing a driver) is not built yet.
+Reading needs no administrator rights. "Disabled" means turned off in Device Manager, and "not connected" means the device is known to Windows but is not plugged in or present right now.
+
+The changes use `pnputil`, the Windows tool that Device Manager's own commands use. Each change checks for administrator rights before it asks anything, reads the device back afterwards, and says what Windows reports now. `dvc driver rm` only removes packages you installed (`oem` packages); the ones that came with Windows are refused. Removing a driver can stop the device working until another driver is installed, so the question says so. A driver update here means installing a newer `.inf`; there is no "update driver" for a device that finds one on its own.
+
+### Firewall
+
+Type `fw` to see each network profile (domain, private, public): whether the firewall is on, what it does by default for incoming and outgoing traffic, and which networks this PC is connected to. The rules come after that.
+
+```
+fw                             each profile, and the networks this PC is on
+fw rules                       every rule, numbered by name, 40 to a page
+fw rules in block              incoming rules that block
+fw rules off                   rules that are turned off
+fw rules search print          find by name
+fw rule 12                     one rule in full: its program, ports and addresses
+fw rule 12 on | off            turn one rule on or off (administrator; asks first)
+fw on | off public             turn the firewall on or off for one profile, or all three (administrator)
+```
+
+Reading needs no administrator rights. Turning a profile off asks first, and warns when you are on a public network. Turning the firewall off also stops every rule for that profile from applying, including the blocks that `net block` made. Rule ids are numbered by name, so they shift as rules come and go. Rules that `net block` made show up here too, marked as made by `net block`. Rules are not deleted from this page.
 
 ### Event logs
 
@@ -335,37 +360,37 @@ Windows writes event messages in the language of the PC, and not every provider'
 
 ### Network monitor
 
-`net` is already the wifi page's short name, so this page is `nm` (also `traffic`).
+`net` opens this page. `nm` and `traffic` work too.
 
 ```
-nm                        overview: interfaces, connections, busiest programs, findings
-nm live [seconds]         live view, redrawn every 2 s (Ctrl+C stops and saves a sample)
-nm ls                     every connection, with program, domain and how long it has been open
-nm ls --sort seen         longest open first (also: program, remote, port, state, domain, proto)
-nm ls --state listen --loopback --process svchost.exe --ip 192.168.1.50 --proto tcp
-nm 12                     one connection in full: its program, why it exists, what you can do
-nm procs                  traffic by program: connections, peers, domains, and what each one is
-nm iface                  Wi-Fi and Ethernet: speed, bytes since Windows started, rate now
-nm history [days]         totals and busiest programs from earlier nm live sessions
-nm history clear          delete the saved samples (asks first)
-nm kill 12                end the program that owns connection 12 (asks first; Windows parts refused)
-nm block 12               block the remote address of connection 12, in and out (administrator; asks first)
-nm block 203.0.113.9      block an address directly
-nm block ls               list the blocks this page made
-nm unblock 203.0.113.9    remove them
+net                        overview: interfaces, connections, busiest programs, findings
+net live [seconds]         live view, redrawn every 2 s (Ctrl+C stops and saves a sample)
+net ls                     every connection, with program, domain and how long it has been open
+net ls --sort seen         longest open first (also: program, remote, port, state, domain, proto)
+net ls --state listen --loopback --process svchost.exe --ip 192.168.1.50 --proto tcp
+net 12                     one connection in full: its program, why it exists, what you can do
+net procs                  traffic by program: connections, peers, domains, and what each one is
+net iface                  Wi-Fi and Ethernet: speed, bytes since Windows started, rate now
+net history [days]         totals and busiest programs from earlier net live sessions
+net history clear          delete the saved samples (asks first)
+net kill 12                end the program that owns connection 12 (asks first; Windows parts refused)
+net block 12               block the remote address of connection 12, in and out (administrator; asks first)
+net block 203.0.113.9      block an address directly
+net block ls               list the blocks this page made
+net unblock 203.0.113.9    remove them
 ```
 
-`nm ls` hides connections that stay on this PC; `--loopback` shows them. Ids follow the list, so check the program in `nm 12` before you kill or block. A few addresses are refused, so blocking cannot cut this PC off: its own addresses, its router, and its DNS servers.
+`net ls` hides connections that stay on this PC; `--loopback` shows them. Ids follow the list, so check the program in `net 12` before you kill or block. A few addresses are refused, so blocking cannot cut this PC off: its own addresses, its router, and its DNS servers.
 
 What it can and cannot tell you:
 
-- **Bytes** are counted per adapter (`nm iface`, and `nm history`). Windows does not give ordinary users byte counts per connection or per program, so `nm procs` shows connections and peers instead.
+- **Bytes** are counted per adapter (`net iface`, and `net history`). Windows does not give ordinary users byte counts per connection or per program, so `net procs` shows connections and peers instead.
 - **Domains** come from the names Windows looked up recently (its DNS cache), then from a reverse lookup of the address. Some addresses have no name.
-- **"Open for"** is the time since `nm` first saw a connection. It is not the time since the connection began, which Windows does not report.
+- **"Open for"** is the time since `net` first saw a connection. It is not the time since the connection began, which Windows does not report.
 - **Why it exists** is a best guess from the port, the program and the address. It says "usually" and "likely" because a program can use any port.
-- **Blocks** are Windows Firewall rules named `w11-cli-console-block-<ip>-out` and `-in`. `nm unblock` removes them.
+- **Blocks** are Windows Firewall rules named `w11-cli-console-block-<ip>-out` and `-in`. `net unblock` removes them.
 
-Samples are saved to `%LOCALAPPDATA%\w11-cli-console\net-history.jsonl` once a minute while `nm live` runs, and kept for 30 days. The first-seen times are in `net-seen.json` in the same folder.
+Samples are saved to `%LOCALAPPDATA%\w11-cli-console\net-history.jsonl` once a minute while `net live` runs, and kept for 30 days. The first-seen times are in `net-seen.json` in the same folder.
 
 ## Adding a setting
 
@@ -391,7 +416,7 @@ def run(args):             # args = words after the name
 - `_net.py`: code shared by the wifi and ethernet pages (adapter details, IP, DNS, sharing, features, 802.1X)
 - `intro.txt`: the banner shown when the console starts
 - `settings.py`: the `settings` list, which shows every setting
-- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`, `netmon.py`: settings
+- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`, `netmon.py`, `firewall.py`: settings
 - `_probe.py`: code shared by hardware and system (one PowerShell call per group of readings, the processor API, power status, tables)
 - `fashion.txt`: the pattern every new page follows, and what each setting is for
 - `brightness.ahk`: the older AutoHotkey version of brightness

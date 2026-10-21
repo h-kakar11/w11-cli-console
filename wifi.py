@@ -1,6 +1,6 @@
 """
 wifi: connect to Wi-Fi, and every Wi-Fi setting, on Windows 11. Routed from app.py
-("wifi", "net", "internet" or "wf").
+("wifi", "internet" or "wf").
 
     wifi ls            list Wi-Fi networks in range, with ids
     wifi status        show the network you are connected to
@@ -49,7 +49,7 @@ import _net
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
 NAME = "wifi"
-ALIASES = ["net", "internet", "wf"]
+ALIASES = ["internet", "wf"]
 SUMMARY = "Connect to Wi-Fi, and every Wi-Fi setting"
 USAGE = ("wifi ls | wifi status | wifi info | wifi on|off | wifi <id> [on|off] | wifi rm <id> | "
          "wifi known [...] | wifi metered on|off | wifi random on|off | wifi auth | wifi ip | wifi dns | "
@@ -696,7 +696,7 @@ def _info(options):
 
 
 # ======================================================================
-# COMMAND — app.py calls run(args) with everything after "wifi"/"net"
+# COMMAND — app.py calls run(args) with everything after "wifi"
 # ======================================================================
 def _describe(net):
     state = "connected" if net["connected"] else "not connected"

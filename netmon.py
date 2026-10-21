@@ -1,27 +1,27 @@
 """
 netmon: a live view of this PC's network connections. Routed from app.py
-("netmon", "nm" or "traffic"). "net" is wifi's name, so this page uses nm.
+("netmon", "net", "nm" or "traffic").
 
-    nm                        overview: interfaces, connections, busiest programs, findings
-    nm live [seconds]         live view, redrawn every 2 s (Ctrl+C stops and saves a sample)
-    nm ls [options]           every connection, one row each, sorted and filtered
-    nm <id>                   one connection in full: its program, why it exists, what you can do
-    nm procs                  traffic by program: connections, peers, and what each one is
-    nm iface                  Wi-Fi and Ethernet: speed, bytes since Windows started, rate now
-    nm history [days]         totals and busiest programs from earlier nm live sessions
-    nm history clear          delete the saved samples (asks first)
-    nm kill <id>              end the program that owns a connection (asks first)
-    nm block [ls]             list the addresses blocked by this page
-    nm block <id|ip>          block all traffic to and from an address (administrator; asks first)
-    nm unblock <ip>           remove the blocks this page made for an address
+    net                        overview: interfaces, connections, busiest programs, findings
+    net live [seconds]         live view, redrawn every 2 s (Ctrl+C stops and saves a sample)
+    net ls [options]           every connection, one row each, sorted and filtered
+    net <id>                   one connection in full: its program, why it exists, what you can do
+    net procs                  traffic by program: connections, peers, and what each one is
+    net iface                  Wi-Fi and Ethernet: speed, bytes since Windows started, rate now
+    net history [days]         totals and busiest programs from earlier net live sessions
+    net history clear          delete the saved samples (asks first)
+    net kill <id>              end the program that owns a connection (asks first)
+    net block [ls]             list the addresses blocked by this page
+    net block <id|ip>          block all traffic to and from an address (administrator; asks first)
+    net unblock <ip>           remove the blocks this page made for an address
 
-nm ls options: --sort program|remote|port|state|seen|domain|proto (seen puts the longest open
+net ls options: --sort program|remote|port|state|seen|domain|proto (seen puts the longest open
 first), --reverse, --state listen|established|..., --proto tcp|udp, --process <name>, --ip <address>,
 --loopback (also shows connections that stay on this PC).
 
-Byte counts are per adapter (nm iface). Windows does not give ordinary users byte counts per
-connection or per program, so nm procs shows what each program is connected to instead. "open for"
-is the time since nm first saw a connection; nm keeps that in a small file, so it survives between runs.
+Byte counts are per adapter (net iface). Windows does not give ordinary users byte counts per
+connection or per program, so net procs shows what each program is connected to instead. "open for"
+is the time since net first saw a connection; net keeps that in a small file, so it survives between runs.
 
 Needs psutil (see requirements.txt). Blocking uses netsh and Windows Firewall, and needs administrator rights.
 """
@@ -46,19 +46,19 @@ import process as process_page  # the same rule prc uses for system programs
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
 NAME = "netmon"
-ALIASES = ["nm", "traffic"]
+ALIASES = ["net", "nm", "traffic"]
 SUMMARY = "Live network monitor: connections, programs, traffic per adapter, and blocks"
-USAGE = "nm | nm live [sec] | nm ls [options] | nm <id> | nm procs | nm iface | nm history | nm kill <id> | nm block <id|ip>"
+USAGE = "net | net live [sec] | net ls [options] | net <id> | net procs | net iface | net history | net kill <id> | net block <id|ip>"
 HELP = [
-    ("nm", "overview: interfaces, connections, and what is using the network"),
-    ("nm live", "live view, refreshed every 2 s (Ctrl+C to stop)"),
-    ("nm ls", "every connection, with its program, domain and how long it has been open"),
-    ("nm <id>", "one connection in full, with why it exists and what you can do"),
-    ("nm procs", "traffic by program"),
-    ("nm iface", "Wi-Fi and Ethernet: speed, bytes, and the rate now"),
-    ("nm history", "totals from earlier nm live sessions"),
-    ("nm kill <id>", "end the program that owns a connection (asks first)"),
-    ("nm block <id|ip>", "block all traffic to and from an address (administrator; asks first)"),
+    ("net", "overview: interfaces, connections, and what is using the network"),
+    ("net live", "live view, refreshed every 2 s (Ctrl+C to stop)"),
+    ("net ls", "every connection, with its program, domain and how long it has been open"),
+    ("net <id>", "one connection in full, with why it exists and what you can do"),
+    ("net procs", "traffic by program"),
+    ("net iface", "Wi-Fi and Ethernet: speed, bytes, and the rate now"),
+    ("net history", "totals from earlier net live sessions"),
+    ("net kill <id>", "end the program that owns a connection (asks first)"),
+    ("net block <id|ip>", "block all traffic to and from an address (administrator; asks first)"),
 ]
 TIP = "Byte counts are per adapter: Windows gives ordinary users no byte counts per connection or program."
 
@@ -67,7 +67,7 @@ RED, GREY, RESET = "\033[91m", "\033[90m", "\033[0m"
 SECTION_COLORS = [CYAN, GREEN, YELLOW, MAGENTA, BLUE]  # the palette the other pages use
 CELL_MAX = 40  # a table cell longer than this is cut with "..."
 MIB = 1024 * 1024
-RATE_SECONDS = 1.0  # how long the overview and nm iface watch the counters for a rate
+RATE_SECONDS = 1.0  # how long the overview and net iface watch the counters for a rate
 LIVE_DEFAULT = 2
 LIVE_MAX = 60
 LOOKUP_BUDGET = 2.0  # seconds one command waits for name lookups
@@ -78,7 +78,7 @@ ANY_ADDRESS = ("0.0.0.0", "::")  # listening here means "any address", so other 
 TEMP_MARKS = ("\\temp\\", "\\tmp\\", "\\downloads\\")
 LIST_WORDS = ("ls", "list")
 CLEAR_WORDS = ("clear", "rm", "delete")
-SAMPLE_EVERY = 60  # seconds between history samples while nm live runs
+SAMPLE_EVERY = 60  # seconds between history samples while net live runs
 HISTORY_KEEP_DAYS = 30
 HISTORY_MAX_BYTES = 2 * MIB
 BLOCK_PREFIX = "w11-cli-console-block-"  # every firewall rule this page makes starts with this
@@ -134,7 +134,7 @@ PORT_MEANINGS = {
     5986: "Windows remote management", 3478: "calls and video (STUN/TURN)", 5222: "chat (XMPP)",
 }
 
-DOMAIN_STATUS = {  # shown in nm <id> when there is no name, by why there is none
+DOMAIN_STATUS = {  # shown in net <id> when there is no name, by why there is none
     "no name": "none found",
     "still looking up": "still looking up",
     "": "not looked up (not an internet address, or the lookup ran out of time)",
@@ -305,7 +305,7 @@ def _address_owners():
 
 
 def _remember(keys):
-    """When nm first saw each connection. Connections that are gone are forgotten."""
+    """When net first saw each connection. Connections that are gone are forgotten."""
     now = time.time()
     previous = _read_json(SEEN_FILE, {})
     current = {key: previous.get(key, now) for key in keys}
@@ -395,7 +395,7 @@ def _find(conns, number):
     for c in conns:
         if c["id"] == number:
             return c
-    raise NetmonError(f"no connection with id {number}. Run 'nm ls' to see them.", 2)
+    raise NetmonError(f"no connection with id {number}. Run 'net ls' to see them.", 2)
 
 
 def _endpoint(ip, port):
@@ -610,7 +610,7 @@ def _findings(conns, rows):
                           if c["listening"] and c["laddr"] in ANY_ADDRESS and not c["protected"]}, key=str.lower)
     if open_to_all:
         found.append(f"{len(open_to_all)} program(s) accept traffic from any address: {', '.join(open_to_all[:8])}. "
-                     "Check each one with 'nm ls --state listen'.")
+                     "Check each one with 'net ls --state listen'.")
     temp = sorted({c["program"] for c in conns if _from_temp(c["exe"])}, key=str.lower)
     if temp:
         found.append(f"{', '.join(temp[:8])} run from a temporary or download folder. Check where they came from.")
@@ -720,10 +720,10 @@ def _overview(options):
     lines += _section(2, "busiest programs", table)
     lines += _section(3, "findings", [f"  {text}" for text in findings])
     lines += _section(4, "next", _pairs([
-        ("nm live", "watch it change, every 2 s"),
-        ("nm ls", "every connection, with domains and how long it has been open"),
-        ("nm procs", "traffic by program, with what each one is"),
-        ("nm iface", "Wi-Fi and Ethernet bytes and speed"),
+        ("net live", "watch it change, every 2 s"),
+        ("net ls", "every connection, with domains and how long it has been open"),
+        ("net procs", "traffic by program, with what each one is"),
+        ("net iface", "Wi-Fi and Ethernet bytes and speed"),
     ], BLUE))
     _say(lines)
     return 0
@@ -755,7 +755,7 @@ def _select(conns, options):
 
 def _list(rest, options):
     if rest:
-        raise NetmonError("usage: nm ls [--sort program|remote|port|state|seen|domain|proto] [--reverse] "
+        raise NetmonError("usage: net ls [--sort program|remote|port|state|seen|domain|proto] [--reverse] "
                           "[--state listen|established] [--proto tcp|udp] [--process <name>] [--ip <address>] [--loopback]", 2)
     conns = _gather()
     rows = _select(conns, options)
@@ -763,7 +763,7 @@ def _list(rest, options):
         _core.print_json(rows)
         return 0
     if not rows:
-        _say([CYAN + "no connections match. 'nm ls --loopback' also shows the ones that stay on this PC." + RESET])
+        _say([CYAN + "no connections match. 'net ls --loopback' also shows the ones that stay on this PC." + RESET])
         return 0
     now = time.time()
     table = _table(
@@ -773,7 +773,7 @@ def _list(rest, options):
           c["domain"] or "-", _open_for(c, now)] for c in rows],
         [_row_color(c) for c in rows],
     )
-    _say([f"{len(rows)} of {len(conns)} connections. 'nm <id>' explains one. Ids follow the list, so they can shift.", ""]
+    _say([f"{len(rows)} of {len(conns)} connections. 'net <id>' explains one. Ids follow the list, so they can shift.", ""]
          + table)
     return 0
 
@@ -792,7 +792,7 @@ def _procs(options):
     )
     _say([CYAN + f"{len(programs)} programs. Red is part of Windows; green has connections open now." + RESET, ""]
          + table
-         + ["", GREY + "Bytes are not counted per program. 'nm iface' shows bytes per adapter." + RESET])
+         + ["", GREY + "Bytes are not counted per program. 'net iface' shows bytes per adapter." + RESET])
     return 0
 
 
@@ -805,7 +805,7 @@ def _seconds(rest):
     try:
         value = int(rest[0])
     except ValueError:
-        raise NetmonError("usage: nm live [seconds], e.g. nm live 5", 2)
+        raise NetmonError("usage: net live [seconds], e.g. net live 5", 2)
     if not 1 <= value <= LIVE_MAX:
         raise NetmonError(f"seconds must be from 1 to {LIVE_MAX}", 2)
     return value
@@ -903,7 +903,7 @@ def _live(rest, options):
     except KeyboardInterrupt:
         print()
         if samples:
-            print(f"stopped. Samples are saved to {HISTORY_FILE}. 'nm history' shows them.")
+            print(f"stopped. Samples are saved to {HISTORY_FILE}. 'net history' shows them.")
         else:
             print("stopped.")
         return 0
@@ -933,10 +933,10 @@ def _inspect(number, options):
     if conn["protected"]:
         actions.append(("nothing", "this is part of Windows; netmon will not end it"))
     elif conn["pid"] is not None:
-        actions.append((f"nm kill {number}", f"end {conn['program']}; its unsaved work is lost (asks first)"))
+        actions.append((f"net kill {number}", f"end {conn['program']}; its unsaved work is lost (asks first)"))
     if conn["raddr"] and not conn["local_only"]:
-        actions.append((f"nm block {number}", "block this address for every program (administrator; asks first)"))
-    actions.append((f"nm ls --process {conn['program'].lower()}", "every connection this program has"))
+        actions.append((f"net block {number}", "block this address for every program (administrator; asks first)"))
+    actions.append((f"net ls --process {conn['program'].lower()}", "every connection this program has"))
     domain = conn["domain"] or DOMAIN_STATUS.get(conn["domain_source"], DOMAIN_STATUS[""])
     if conn["domain"]:
         domain = f"{conn['domain']} (from {conn['domain_source']})"
@@ -957,7 +957,7 @@ def _inspect(number, options):
             ("domain", domain),
             ("place", conn["scope"] or "-"),
             ("uses adapter", conn["via"] or "-"),
-            ("open for", f"{_open_for(conn, now)}, since nm first saw it at {_local_time(conn['first_seen'])}"),
+            ("open for", f"{_open_for(conn, now)}, since net first saw it at {_local_time(conn['first_seen'])}"),
         ]),
         ("why it exists", [(str(i), text) for i, text in enumerate(why, start=1)]),
         ("what you can do", actions),
@@ -999,7 +999,7 @@ def _one_id(rest, usage):
 
 def _kill(rest, options):
     conns = _gather()
-    conn = _find(conns, _one_id(rest, "usage: nm kill <id>"))
+    conn = _find(conns, _one_id(rest, "usage: net kill <id>"))
     if conn["pid"] is None:
         raise NetmonError("Windows did not give a program for this connection, so there is nothing to end.", 1)
     if conn["pid"] == os.getpid():
@@ -1024,7 +1024,7 @@ def _block_target(word):
     if word.isdigit():
         conn = _find(_gather(), int(word))
         if not conn["raddr"]:
-            raise NetmonError(f"connection {word} has no remote address. Block an address with 'nm block <ip>'.", 2)
+            raise NetmonError(f"connection {word} has no remote address. Block an address with 'net block <ip>'.", 2)
         return conn["raddr"], conn["domain"]
     ip = _norm(word)
     if ip is None:
@@ -1091,7 +1091,7 @@ def _list_blocks(options):
         return 0
     lines = [CYAN + "addresses blocked by netmon" + RESET]
     lines += _pairs([(ip, "outbound and inbound" if len(d) == 2 else ", ".join(sorted(d))) for ip, d in sorted(blocks.items())], GREEN)
-    lines += ["", GREY + "'nm unblock <ip>' removes a block." + RESET]
+    lines += ["", GREY + "'net unblock <ip>' removes a block." + RESET]
     _say(lines)
     return 0
 
@@ -1100,17 +1100,17 @@ def _block(rest, options):
     if not rest or rest[0].lower() in LIST_WORDS:
         return _list_blocks(options)
     if len(rest) != 1:
-        raise NetmonError("usage: nm block <id|ip>, or nm block ls", 2)
+        raise NetmonError("usage: net block <id|ip>, or net block ls", 2)
     ip, domain = _block_target(rest[0])
     _check_blockable(ip)
     _net.need_admin()
     existing = _block_rules().get(ip, {})
     if existing.get("out") and existing.get("in"):
-        print(f"{ip} is already blocked. 'nm unblock {ip}' removes the block.")
+        print(f"{ip} is already blocked. 'net unblock {ip}' removes the block.")
         return 0
     label = f"{ip} ({domain})" if domain else ip
     question = (f"Block all traffic to and from {label}? Every program on this PC loses access to it "
-                f"until you run 'nm unblock {ip}'. [y/N]: ")
+                f"until you run 'net unblock {ip}'. [y/N]: ")
     if not _core.confirm(question, options["yes"]):
         print("cancelled")
         return 0
@@ -1120,17 +1120,17 @@ def _block(rest, options):
             _netsh(["add", "rule", f"name={_rule(ip, direction)}", f"dir={direction}", "action=block",
                     f"remoteip={ip}", "profile=any", "enable=yes"])
     except _net.NetError as e:
-        raise NetmonError(f"{e} Part of the block may be in place; 'nm unblock {ip}' removes it.", 1)
+        raise NetmonError(f"{e} Part of the block may be in place; 'net unblock {ip}' removes it.", 1)
     now = _block_rules().get(ip, {})
     if now.get("out") and now.get("in"):
-        print(f"blocked {label}: outbound and inbound. 'nm unblock {ip}' undoes it.")
+        print(f"blocked {label}: outbound and inbound. 'net unblock {ip}' undoes it.")
         return 0
-    raise NetmonError(f"Windows does not show the block for {ip} yet. Check 'nm block ls'.", 1)
+    raise NetmonError(f"Windows does not show the block for {ip} yet. Check 'net block ls'.", 1)
 
 
 def _unblock(rest, options):
     if len(rest) != 1:
-        raise NetmonError("usage: nm unblock <ip>", 2)
+        raise NetmonError("usage: net unblock <ip>", 2)
     ip = _norm(rest[0])
     if ip is None:
         raise NetmonError(f"not an IP address: {rest[0]}", 2)
@@ -1145,7 +1145,7 @@ def _unblock(rest, options):
     except _net.NetError as e:
         raise NetmonError(str(e), 1)
     if _block_rules().get(ip):
-        raise NetmonError(f"{ip} is still blocked. Check 'nm block ls'.", 1)
+        raise NetmonError(f"{ip} is still blocked. Check 'net block ls'.", 1)
     print(f"unblocked {ip}. Its traffic is allowed again.")
     return 0
 
@@ -1188,7 +1188,7 @@ def _days(rest):
     try:
         value = int(rest[0])
     except ValueError:
-        raise NetmonError("usage: nm history [days], e.g. nm history 3", 2)
+        raise NetmonError("usage: net history [days], e.g. net history 3", 2)
     if not 1 <= value <= HISTORY_KEEP_DAYS:
         raise NetmonError(f"days must be from 1 to {HISTORY_KEEP_DAYS}", 2)
     return value
@@ -1218,7 +1218,7 @@ def _history(rest, options):
     days = _days(rest)
     samples = _read_samples(days)
     if len(samples) < 2:
-        message = (f"not enough samples in the last {days} day(s). 'nm live' saves one sample a minute while it runs, "
+        message = (f"not enough samples in the last {days} day(s). 'net live' saves one sample a minute while it runs, "
                    "so run it for a couple of minutes first.")
         if options["json"]:
             _core.print_json({"samples": len(samples)})
@@ -1253,7 +1253,7 @@ def _history(rest, options):
         return 0
     lines = [CYAN + f"{count} samples over {_elapsed(span)}, from {_local_time(samples[0]['t'])} "
              f"to {_local_time(samples[-1]['t'])}" + RESET,
-             GREY + "  Only the time that nm live was running is covered." + RESET]
+             GREY + "  Only the time that net live was running is covered." + RESET]
     lines += _section(0, "bytes per adapter", _pairs([
         (name, f"{_size(t['in'])} in, {_size(t['out'])} out") for name, t in sorted(totals.items())
     ]) or ["  no adapter counts in these samples"])
@@ -1339,7 +1339,7 @@ def _dispatch(args):
         return _unblock(rest, options)
     if word.isdigit():
         return _inspect(int(word), options)
-    raise NetmonError(f"unknown netmon command: {words[0]}. Type 'nm' for the overview, or 'nm help' for the commands.", 2)
+    raise NetmonError(f"unknown netmon command: {words[0]}. Type 'net' for the overview, or 'net help' for the commands.", 2)
 
 
 def run(args):

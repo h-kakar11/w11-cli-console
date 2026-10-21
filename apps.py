@@ -21,6 +21,8 @@ import subprocess
 import sys
 import winreg
 
+import _core
+
 # ======================================================================
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
@@ -171,9 +173,12 @@ ROW_COLORS = ["\033[96m", "\033[92m", "\033[93m", "\033[95m", "\033[94m", "\033[
 RESET = "\033[0m"
 
 
-def _list():
+def _list(options):
     """Print apps down each column, then start the next column, so long lists fit on screen."""
     apps = _entries()
+    if options["json"]:
+        _core.print_json([{"id": a["id"], "name": a["name"], "source": a["source"]} for a in apps])
+        return
     if not apps:
         print("(no apps found)")
         return
@@ -202,7 +207,7 @@ def _list():
         print(line)
 
 
-def _remove(args):
+def _remove(args, options):
     if len(args) != 2:
         raise AppsError("usage: apps rm <id>", 2)
     try:
@@ -211,12 +216,7 @@ def _remove(args):
         raise AppsError("apps rm needs an app id from 'apps ls'", 2)
 
     app = _get_app(app_id)
-    try:
-        answer = input(f"Uninstall {app['name']}? This can't be undone. [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        answer = ""
-    if answer not in ("y", "yes"):
+    if not _core.confirm(f"Uninstall {app['name']}? This can't be undone. [y/N]: ", options["yes"]):
         print("cancelled")
         return
 
@@ -225,20 +225,20 @@ def _remove(args):
     print(f"uninstalled {app['name']}")
 
 
-def _dispatch(args):
+def _dispatch(args, options):
     command = args[0].lower()
     if command in ("ls", "list"):
         if len(args) > 1:
             raise AppsError("usage: apps ls", 2)
-        _list()
+        _list(options)
     elif command in ("rm", "remove", "delete", "uninstall", "del"):
-        _remove(args)
+        _remove(args, options)
     else:
         raise AppsError(f"unknown apps command: {args[0]}\nusage: apps {USAGE}", 2)
 
-
 def run(args):
     """Run one apps command; returns an exit code."""
+    args, options = _core.split_flags(args)
     if not args:
         print(f"usage: apps {USAGE}")
         return 0
@@ -246,7 +246,7 @@ def run(args):
         print(f"usage: apps {USAGE}")
         return 0
     try:
-        _dispatch(args)
+        _dispatch(args, options)
         return 0
     except AppsError as e:
         print(f"error: {e}", file=sys.stderr)
