@@ -9,8 +9,10 @@ import _core
 # SETTING INFO — read by app.py to list and route this setting
 # ======================================================================
 NAME = "brightness"
-ALIASES = ["bn", "b", "bright", "brightness", "screen", "monitor", "display"]
+ALIASES = ["bn", "b", "bright", "brightness", "screen", "monitor"]
 SUMMARY = "Alter monitor screen brightness"
+# extra words people use, for 'settings search'
+KEYWORDS = ["dim", "backlight", "screen", "monitor", "display", "darker", "brighter"]
 USAGE = "bn [set] <number> | bn get | bn up [step] | bn down [step]   (set is optional: bn 40 = bn set 40)"
 HELP = [
     ("bn <0-100>", "set the brightness, e.g. bn 40"),

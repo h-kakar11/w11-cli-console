@@ -33,6 +33,8 @@ import _net
 NAME = "ethernet"
 ALIASES = ["eth", "lan", "wired"]
 SUMMARY = "Wired network: details, IP, DNS, 802.1X and metered"
+# extra words people use, for 'settings search'
+KEYWORDS = ["wired", "cable", "lan", "ip address", "dns", "802.1x", "network", "no internet"]
 USAGE = ("eth info | eth ip [auto|manual <ip>/<prefix> [<gateway>]] | eth dns [auto|<server>...] | "
          "eth metered on|off | eth auth [on|off|method|mode|remember|fallback|sso ...] | eth share | "
          "eth features | eth ls | eth <id> <command>")

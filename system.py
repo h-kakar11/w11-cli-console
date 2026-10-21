@@ -33,7 +33,9 @@ import _probe
 # ======================================================================
 NAME = "system"
 ALIASES = ["sys"]
-SUMMARY = "Uptime, load, processes, startup, power and overall health"
+SUMMARY = "Uptime, load, processes, startup, power and health"
+# extra words people use, for 'settings search'
+KEYWORDS = ["uptime", "health", "power", "battery", "startup programs", "path", "slow pc", "inventory"]
 USAGE = "sys uptime | sys load | sys processes | sys startup | sys power | sys health"
 HELP = [
     ("sys health", "the indicators that matter for a problem: ok, warn or bad"),

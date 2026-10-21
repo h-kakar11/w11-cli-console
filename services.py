@@ -43,6 +43,8 @@ import _probe
 NAME = "services"
 ALIASES = ["svc"]
 SUMMARY = "Find, inspect, start, stop and set Windows services"
+# extra words people use, for 'settings search'
+KEYWORDS = ["services.msc", "daemon", "service", "start a service", "stop a service"]
 USAGE = ("svc ls | svc <id> | svc search <words> | svc failed | svc failures [days] | "
          "svc on|off|restart | svc auto|manual|disabled   (e.g. svc 12 restart)")
 HELP = [

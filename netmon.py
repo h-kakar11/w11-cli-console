@@ -7,6 +7,8 @@ netmon: a live view of this PC's network connections. Routed from app.py
     net ls [options]           every connection, one row each, sorted and filtered
     net <id>                   one connection in full: its program, why it exists, what you can do
     net procs                  traffic by program: connections, peers, and what each one is
+    net bytes [seconds]        bytes per program, address and protocol, measured for a few seconds (administrator)
+    net bytes last | clear     show the last measurement without measuring, or delete it
     net iface                  Wi-Fi and Ethernet: speed, bytes since Windows started, rate now
     net history [days]         totals and busiest programs from earlier net live sessions
     net history clear          delete the saved samples (asks first)
@@ -17,11 +19,16 @@ netmon: a live view of this PC's network connections. Routed from app.py
 
 net ls options: --sort program|remote|port|state|seen|domain|proto (seen puts the longest open
 first), --reverse, --state listen|established|..., --proto tcp|udp, --process <name>, --ip <address>,
---loopback (also shows connections that stay on this PC).
+--loopback (also shows connections that stay on this PC), --bytes (adds the bytes net bytes last saw).
+net bytes options: --sort total|in|out|program, --reverse, --loopback.
 
-Byte counts are per adapter (net iface). Windows does not give ordinary users byte counts per
-connection or per program, so net procs shows what each program is connected to instead. "open for"
-is the time since net first saw a connection; net keeps that in a small file, so it survives between runs.
+Byte counts per adapter come from net iface and need no administrator rights. Windows gives ordinary users
+no byte counts per connection or per program, so net bytes measures them for a short window: as administrator
+it runs a Windows trace session (the Microsoft-Windows-Kernel-Network provider, started and stopped with
+logman), reads the trace back with Get-WinEvent, adds the bytes up and deletes the trace. The session is always
+stopped, even on Ctrl+C. The last measurement is kept in a small file, and net procs and net <id> show it
+(with how long ago it was taken). "open for" is the time since net first saw a connection; net keeps that in
+a small file, so it survives between runs.
 
 Needs psutil (see requirements.txt). Blocking uses netsh and Windows Firewall, and needs administrator rights.
 """
@@ -29,9 +36,12 @@ Needs psutil (see requirements.txt). Blocking uses netsh and Windows Firewall, a
 import ipaddress
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -40,6 +50,7 @@ import psutil
 
 import _core
 import _net
+import _win
 import process as process_page  # the same rule prc uses for system programs
 
 # ======================================================================
@@ -48,19 +59,23 @@ import process as process_page  # the same rule prc uses for system programs
 NAME = "netmon"
 ALIASES = ["net", "nm", "traffic"]
 SUMMARY = "Live network monitor: connections, programs, traffic per adapter, and blocks"
-USAGE = "net | net live [sec] | net ls [options] | net <id> | net procs | net iface | net history | net kill <id> | net block <id|ip>"
+USAGE = ("net | net live [sec] | net ls [options] | net <id> | net procs | net bytes [sec] | net iface | net history | "
+         "net kill <id> | net block <id|ip>")
 HELP = [
     ("net", "overview: interfaces, connections, and what is using the network"),
     ("net live", "live view, refreshed every 2 s (Ctrl+C to stop)"),
     ("net ls", "every connection, with its program, domain and how long it has been open"),
     ("net <id>", "one connection in full, with why it exists and what you can do"),
-    ("net procs", "traffic by program"),
+    ("net procs", "connections by program, and what each one is"),
+    ("net bytes [seconds]", "bytes in and out per program, measured for a few seconds (administrator)"),
     ("net iface", "Wi-Fi and Ethernet: speed, bytes, and the rate now"),
     ("net history", "totals from earlier net live sessions"),
     ("net kill <id>", "end the program that owns a connection (asks first)"),
     ("net block <id|ip>", "block all traffic to and from an address (administrator; asks first)"),
 ]
-TIP = "Byte counts are per adapter: Windows gives ordinary users no byte counts per connection or program."
+TIP = ("Bytes per program need an administrator terminal: 'net bytes' measures them for 10 seconds. "
+       "Without it, byte counts are per adapter ('net iface').")
+RUN_ALONE = True  # typing 'net' on its own shows the overview, which changes nothing; 'net help' shows this intro
 
 CYAN, GREEN, YELLOW, MAGENTA, BLUE = "\033[96m", "\033[92m", "\033[93m", "\033[95m", "\033[94m"
 RED, GREY, RESET = "\033[91m", "\033[90m", "\033[0m"
@@ -722,9 +737,11 @@ def _overview(options):
     lines += _section(4, "next", _pairs([
         ("net live", "watch it change, every 2 s"),
         ("net ls", "every connection, with domains and how long it has been open"),
-        ("net procs", "traffic by program, with what each one is"),
+        ("net procs", "connections by program, with what each one is"),
+        ("net bytes", "bytes in and out per program, measured for 10 seconds (administrator)"),
         ("net iface", "Wi-Fi and Ethernet bytes and speed"),
     ], BLUE))
+    lines += ["", GREY + "  'net help' lists everything this page can do." + RESET]
     _say(lines)
     return 0
 
@@ -759,40 +776,55 @@ def _list(rest, options):
                           "[--state listen|established] [--proto tcp|udp] [--process <name>] [--ip <address>] [--loopback]", 2)
     conns = _gather()
     rows = _select(conns, options)
+    measured = _fresh_measurement()
     if options["json"]:
-        _core.print_json(rows)
+        _core.print_json([dict(c, bytes=_connection_bytes(measured, c)) for c in rows])
         return 0
     if not rows:
         _say([CYAN + "no connections match. 'net ls --loopback' also shows the ones that stay on this PC." + RESET])
         return 0
     now = time.time()
-    table = _table(
-        ["id", "program", "proto", "state", "address", "domain", "open for"],
-        [[str(c["id"]), c["program"], c["proto"], c["state"],
-          _endpoint(*((c["laddr"], c["lport"]) if c["listening"] else (c["raddr"], c["rport"]))),
-          c["domain"] or "-", _open_for(c, now)] for c in rows],
-        [_row_color(c) for c in rows],
-    )
+    headers = ["id", "program", "proto", "state", "address", "domain", "open for"]
+    cells = [[str(c["id"]), c["program"], c["proto"], c["state"],
+              _endpoint(*((c["laddr"], c["lport"]) if c["listening"] else (c["raddr"], c["rport"]))),
+              c["domain"] or "-", _open_for(c, now)] for c in rows]
+    notes = []
+    if options.get("bytes"):
+        headers.append("bytes")
+        for cell, c in zip(cells, rows):
+            cell.append(_connection_bytes_text(measured, c))
+        notes = ["", GREY + _measured_note(measured, "bytes") + RESET]
+    table = _table(headers, cells, [_row_color(c) for c in rows])
     _say([f"{len(rows)} of {len(conns)} connections. 'net <id>' explains one. Ids follow the list, so they can shift.", ""]
-         + table)
+         + table + notes)
     return 0
 
 
 def _procs(options):
     conns = _gather()
     programs = _programs(conns)
+    measured = _fresh_measurement()
+    by_name = _bytes_by_program(measured)
     if options["json"]:
+        for g in programs:
+            g["bytes"] = by_name.get(g["program"].lower())
         _core.print_json(programs)
         return 0
-    table = _table(
-        ["program", "pids", "conns", "est", "listen", "peers", "talks to", "what it is"],
-        [[g["program"], str(len(g["pids"])), str(g["connections"]), str(g["established"]), str(g["listening"]),
-          str(g["peers"]), ", ".join(g["domains"]) or "-", g["note"] or "-"] for g in programs],
-        [_group_color(g) for g in programs],
-    )
+    headers = ["program", "pids", "conns", "est", "listen", "peers", "talks to", "what it is"]
+    cells = [[g["program"], str(len(g["pids"])), str(g["connections"]), str(g["established"]), str(g["listening"]),
+              str(g["peers"]), ", ".join(g["domains"]) or "-", g["note"] or "-"] for g in programs]
+    if measured:
+        headers.insert(6, "bytes")
+        for cell, g in zip(cells, programs):
+            seen = by_name.get(g["program"].lower())
+            cell.insert(6, _size(seen["total"]) if seen else "0 B")
+        footnote = _measured_note(measured, "bytes") + " 'net iface' shows bytes per adapter."
+    else:
+        footnote = ("Bytes are not counted per program here. 'net iface' shows bytes per adapter, "
+                    "and 'net bytes' measures them per program (administrator).")
+    table = _table(headers, cells, [_group_color(g) for g in programs])
     _say([CYAN + f"{len(programs)} programs. Red is part of Windows; green has connections open now." + RESET, ""]
-         + table
-         + ["", GREY + "Bytes are not counted per program. 'net iface' shows bytes per adapter." + RESET])
+         + table + ["", GREY + footnote + RESET])
     return 0
 
 
@@ -925,8 +957,9 @@ def _inspect(number, options):
     conns = _gather()
     conn = _find(conns, number)
     why = _why(conn)
+    measured = _fresh_measurement()
     if options["json"]:
-        _core.print_json(dict(conn, why=why))
+        _core.print_json(dict(conn, why=why, bytes=_connection_bytes(measured, conn)))
         return 0
     now = time.time()
     actions = []
@@ -937,6 +970,8 @@ def _inspect(number, options):
     if conn["raddr"] and not conn["local_only"]:
         actions.append((f"net block {number}", "block this address for every program (administrator; asks first)"))
     actions.append((f"net ls --process {conn['program'].lower()}", "every connection this program has"))
+    if not measured and conn["raddr"] and not conn["local_only"]:
+        actions.append(("net bytes", "measure bytes per program for 10 seconds (administrator)"))
     domain = conn["domain"] or DOMAIN_STATUS.get(conn["domain_source"], DOMAIN_STATUS[""])
     if conn["domain"]:
         domain = f"{conn['domain']} (from {conn['domain_source']})"
@@ -958,7 +993,7 @@ def _inspect(number, options):
             ("place", conn["scope"] or "-"),
             ("uses adapter", conn["via"] or "-"),
             ("open for", f"{_open_for(conn, now)}, since net first saw it at {_local_time(conn['first_seen'])}"),
-        ]),
+        ] + ([("bytes seen", _connection_bytes_sentence(measured, conn))] if measured and not conn["listening"] else [])),
         ("why it exists", [(str(i), text) for i, text in enumerate(why, start=1)]),
         ("what you can do", actions),
     ]
@@ -1283,15 +1318,636 @@ def _clear_history(options):
 
 
 # ======================================================================
+# BYTES — a Windows trace for a few seconds: bytes per program, remote address and protocol.
+# Windows gives ordinary users no byte counts per connection or program. The only source is the kernel's network
+# events (ETW, the Microsoft-Windows-Kernel-Network provider), which need administrator rights and a trace session.
+# logman starts and stops the session and writes an .etl file; Get-WinEvent reads it back and adds the bytes up;
+# the file is deleted. Nothing here calls the ETW API itself: a wrong structure in ctypes would crash Python,
+# while a wrong logman or Get-WinEvent line only fails with a message.
+# ======================================================================
+BYTES_FILE = "net-bytes.json"  # the last measurement, kept in the data folder
+BYTES_SESSION = "w11-cli-console-net"  # the name of the Windows trace session
+BYTES_DEFAULT, BYTES_MIN, BYTES_MAX = 10, 3, 120  # seconds one measurement runs
+BYTES_FRESH = 3600  # a measurement older than this (seconds) is not shown next to the live lists
+BYTES_SORTS = ("total", "in", "out", "program")
+BYTES_ROWS = 25  # programs shown in the table (--json has all of them)
+BYTES_REMOTES = 10  # remote addresses shown
+BYTES_KEEP = 300  # connections saved with a measurement, busiest first
+READ_TIMEOUT = 900  # seconds Get-WinEvent may take to read a trace
+KERNEL_NETWORK = "{7dd42a49-5329-4832-8dfd-43d979153a88}"  # Microsoft-Windows-Kernel-Network, by id so no name lookup is needed
+KERNEL_NETWORK_NAME = "Microsoft-Windows-Kernel-Network"
+# The trace events that carry data: id -> (protocol, direction, IP version). 10, 11, 42 and 43 are the ones Microsoft
+# publishes for this provider. The IPv6 ids follow the same pattern but were not confirmed, so every id is checked
+# against the provider's own event list before it is counted (see _data_events).
+DATA_EVENTS = {
+    10: ("tcp", "out", 4), 11: ("tcp", "in", 4), 26: ("tcp", "out", 6), 27: ("tcp", "in", 6),
+    42: ("udp", "out", 4), 43: ("udp", "in", 4), 58: ("udp", "out", 6), 59: ("udp", "in", 6),
+}
+BYTES_SORT_KEYS = {
+    "total": lambda g: (-g["total"], g["program"].lower()),
+    "in": lambda g: (-g["in"], g["program"].lower()),
+    "out": lambda g: (-g["out"], g["program"].lower()),
+    "program": lambda g: (g["program"].lower(),),
+}
+
+# What the provider says about its own events. Used to check DATA_EVENTS before anything is counted.
+META_SCRIPT = r"""
+$provider = Get-WinEvent -ListProvider 'Microsoft-Windows-Kernel-Network'
+foreach ($e in $provider.Events) {
+    [pscustomobject]@{ id = [int]$e.Id; description = [string]$e.Description; template = [string]$e.Template }
+}
+"""
+
+# Reads the trace and adds the data events up per event id, process, source and destination, so a busy network
+# does not produce a huge reply. The path and the ids arrive in the environment, never in the script text. Fields
+# are taken by name from the event's XML, which Windows formats (dotted addresses, ports as numbers).
+READ_SCRIPT = r"""
+$etl = $env:W11_ETL
+$want = @{}
+foreach ($part in ($env:W11_IDS -split ',')) { if ($part) { $want[[int]$part] = $true } }
+$agg = @{}
+$census = @{}
+$total = 0
+$unparsed = 0
+Get-WinEvent -Path $etl -Oldest -ErrorAction SilentlyContinue -ErrorVariable readErr | ForEach-Object {
+    $total++
+    $eventId = [int]$_.Id
+    $census[[string]$eventId] = 1 + [int]$census[[string]$eventId]
+    if (-not $want.ContainsKey($eventId)) { return }
+    try {
+        $fields = @{}
+        foreach ($m in [regex]::Matches($_.ToXml(), "<Data Name='([^']+)'>([^<]*)</Data>")) {
+            $fields[$m.Groups[1].Value] = $m.Groups[2].Value
+        }
+        $size = [int64]0
+        if (-not ($fields.ContainsKey('PID') -and $fields.ContainsKey('daddr') -and $fields.ContainsKey('saddr') -and
+                  [int64]::TryParse([string]$fields['size'], [ref]$size))) { $unparsed++; return }
+        $key = '{0}|{1}|{2}|{3}|{4}|{5}' -f $eventId, $fields['PID'], $fields['daddr'], $fields['dport'], $fields['saddr'], $fields['sport']
+        $row = $agg[$key]
+        if ($null -eq $row) {
+            $row = [pscustomobject]@{ kind = 'row'; id = $eventId; pid = [string]$fields['PID']
+                                      daddr = [string]$fields['daddr']; dport = [string]$fields['dport']
+                                      saddr = [string]$fields['saddr']; sport = [string]$fields['sport']
+                                      bytes = [int64]0; events = 0 }
+            $agg[$key] = $row
+        }
+        $row.bytes += $size
+        $row.events++
+    } catch { $unparsed++ }
+}
+$problems = @($readErr | Where-Object { $_ -and $_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*' } |
+    ForEach-Object { $_.Exception.Message })
+$agg.Values
+[pscustomobject]@{ kind = 'summary'; total = $total; unparsed = $unparsed; problems = ($problems -join '; ')
+                   census = @($census.GetEnumerator() | ForEach-Object { [pscustomobject]@{ id = [string]$_.Key; count = [int]$_.Value } }) }
+"""
+
+
+def _note(options, text):
+    """A progress line. With --json it goes to stderr, so stdout stays pure data."""
+    print(text, file=sys.stderr if options["json"] else sys.stdout, flush=True)
+
+
+# -- the trace session ------------------------------------------------------------------------------------------
+def _logman(*words, timeout=30):
+    return _net.run_tool(["logman", *words], timeout=timeout)
+
+
+def _stop_session():
+    """Stops the trace session if it is running. False only when it is running and Windows would not stop it."""
+    ok, text = _logman("query", BYTES_SESSION, "-ets")
+    if not ok or "not found" in text.lower():
+        return True
+    ok, _ = _logman("stop", BYTES_SESSION, "-ets")
+    return ok
+
+
+def _start_session(etl):
+    ok, text = _logman("start", BYTES_SESSION, "-p", KERNEL_NETWORK, "0xFFFFFFFFFFFFFFFF", "0xFF", "-o", etl,
+                       "-ets", "-bs", "1024", "-nb", "4", "16", "-max", "256")
+    if not ok:
+        reason = _net.explain(text)
+        raise NetmonError(reason if reason == _net.ADMIN_HINT else f"Windows would not start the trace: {reason}")
+
+
+def _wait(seconds):
+    """Waits for the window to pass. Ctrl+C ends it early; returns True if it did."""
+    end = time.time() + seconds
+    try:
+        while time.time() < end:
+            time.sleep(min(0.25, max(0.0, end - time.time())))
+    except KeyboardInterrupt:
+        return True
+    return False
+
+
+def _remove(folder):
+    """Deletes the temporary folder the trace was written to. A file Windows still holds is tried again."""
+    for _ in range(3):
+        shutil.rmtree(folder, ignore_errors=True)
+        if not os.path.exists(folder):
+            return
+        time.sleep(0.5)
+
+
+# -- what the provider says, and what the trace holds ---------------------------------------------------------------
+def _provider_events():
+    """The provider's own list of events [{id, description, template}], or None when Windows will not give it."""
+    try:
+        return _win.powershell_json(META_SCRIPT, timeout=60)
+    except _net.NetError:
+        return None
+
+
+def _data_events(listed):
+    """(the events to count, a note or None): DATA_EVENTS checked against the provider's own list. An id the provider
+    does not have, one without the fields a data event has, or one whose description says the opposite direction or
+    protocol is left out, so a wrong id can never add bytes that are not there."""
+    if listed is None:
+        return dict(DATA_EVENTS), "the provider's event list could not be read, so the built-in event ids were used unchecked"
+    by_id = {}
+    for row in listed:
+        try:
+            by_id[int(row["id"])] = row
+        except (KeyError, TypeError, ValueError):
+            continue
+    use, left_out = {}, []
+    for event_id, (proto, direction, version) in DATA_EVENTS.items():
+        row = by_id.get(event_id)
+        if row is None:
+            left_out.append(event_id)
+            continue
+        fields = {name.lower() for name in re.findall(r'name="([^"]+)"', row.get("template") or "")}
+        text = (row.get("description") or "").lower()
+        says_out = bool(re.search(r"\b(sent|send|transmitted)\b", text))
+        says_in = bool(re.search(r"\brecei", text))
+        says_udp, says_tcp = "udp" in text, "tcp" in text
+        wrong_way = (direction == "out" and says_in and not says_out) or (direction == "in" and says_out and not says_in)
+        wrong_protocol = (proto == "tcp" and says_udp and not says_tcp) or (proto == "udp" and says_tcp and not says_udp)
+        no_fields = bool(fields) and not {"pid", "size", "daddr", "saddr"} <= fields
+        if wrong_way or wrong_protocol or no_fields:
+            left_out.append(event_id)
+        else:
+            use[event_id] = (proto, direction, version)
+    note = None
+    if left_out:
+        note = ("event id(s) " + ", ".join(str(i) for i in sorted(left_out)) +
+                " were not counted: the provider's own list does not describe them as data events")
+    return use, note
+
+
+def _read_trace(etl, ids):
+    """(rows, summary) from the .etl file: the data events added up per event id, process, source and destination."""
+    data = _win.powershell_json(READ_SCRIPT, timeout=READ_TIMEOUT,
+                                env={"W11_ETL": etl, "W11_IDS": ",".join(str(i) for i in sorted(ids))})
+    rows = [item for item in data if item.get("kind") == "row"]
+    summary = next((item for item in data if item.get("kind") == "summary"), {})
+    if summary.get("problems"):
+        raise NetmonError(f"Windows could not read the trace: {summary['problems']}")
+    return rows, summary
+
+
+def _event_address(text):
+    """An IP address from a trace field: dotted or colon text as Windows formats it, or the raw number an IPv4
+    field holds (the four bytes in network order, read as a little-endian number)."""
+    text = str(text or "").strip()
+    if not text:
+        return None
+    ip = _norm(text)
+    if ip:
+        return ip
+    try:
+        number = int(text, 16) if text.lower().startswith("0x") else int(text)
+    except ValueError:
+        return None
+    if 0 <= number <= 0xFFFFFFFF:
+        return str(ipaddress.IPv4Address(number.to_bytes(4, "little")))
+    return None
+
+
+def _event_port(text):
+    try:
+        port = int(str(text).strip())
+    except ValueError:
+        return None
+    return port if 0 <= port <= 65535 else None
+
+
+def _local_addresses():
+    """The addresses that belong to this PC: its adapters', loopback, and every local address of a connection."""
+    local = {ip for ip in _address_owners() if ip} | {"127.0.0.1", "::1"}
+    try:
+        for c in psutil.net_connections(kind="inet"):
+            if c.laddr:
+                ip = _norm(c.laddr.ip)
+                if ip and ip not in ANY_ADDRESS:
+                    local.add(ip)
+    except psutil.Error:
+        pass
+    return local
+
+
+def _process_names():
+    """pid -> (name, file, account) for every process running now, to name the pids in a trace."""
+    found = {}
+    try:
+        for proc in psutil.process_iter(["pid", "name", "exe", "username"]):
+            info = proc.info
+            found[info["pid"]] = (info.get("name") or f"pid {info['pid']}", info.get("exe"), info.get("username"))
+    except psutil.Error:
+        pass
+    return found
+
+
+def _name_pid(pid, before, after, cache):
+    """{"program", "protected", "ended"} for a process id: looked up among the processes running when the window
+    ended, then among those running when it began (it has ended since if it is only there)."""
+    if pid in cache:
+        return cache[pid]
+    if pid in (0, 4):
+        who = {"program": "System", "protected": True, "ended": False}
+    elif pid in after or pid in before:
+        name, exe, user = after.get(pid) or before.get(pid)
+        who = {"program": name, "ended": pid not in after,
+               "protected": process_page._is_protected(pid, name, exe, user)}
+    else:
+        who = {"program": f"pid {pid} (ended)", "protected": False, "ended": True}
+    cache[pid] = who
+    return who
+
+
+def _orient(saddr, sport, daddr, dport, direction, local):
+    """(local address, local port, remote address, remote port, stays on this PC) for one traced event.
+    An event names a source and a destination. Which of them is this PC depends on the direction and on how Windows
+    fills the fields in for a receive, so it is decided by which address belongs to this PC. The direction only
+    decides when neither is known (a VPN or tunnel address)."""
+    source_here, destination_here = saddr in local, daddr in local
+    if source_here and destination_here:
+        return saddr, sport, daddr, dport, True
+    if source_here:
+        return saddr, sport, daddr, dport, _is_loopback(daddr)
+    if destination_here:
+        return daddr, dport, saddr, sport, _is_loopback(saddr)
+    if direction == "out":
+        return saddr, sport, daddr, dport, False
+    return daddr, dport, saddr, sport, False
+
+
+def _summarize(rows, classes, local, before, after, loopback):
+    """Adds the trace's rows up. Returns programs, remote addresses, protocols, connections and totals as plain data."""
+    cache = {}
+    programs, remotes, connections = {}, {}, {}
+    protocols = {"tcp": {"in": 0, "out": 0}, "udp": {"in": 0, "out": 0}}
+    totals = {"in": 0, "out": 0, "events": 0, "counted": 0, "stayed_on_pc_bytes": 0, "unreadable": 0}
+    for row in rows:
+        kind = classes.get(row.get("id"))
+        if kind is None:
+            continue
+        proto, direction, _version = kind
+        size, events = int(row["bytes"]), int(row["events"])
+        saddr, daddr = _event_address(row.get("saddr")), _event_address(row.get("daddr"))
+        try:
+            pid = int(str(row.get("pid", "")).strip())
+        except ValueError:
+            pid = None
+        if saddr is None or daddr is None or pid is None:
+            totals["unreadable"] += events
+            continue
+        totals["events"] += events
+        laddr, lport, raddr, rport, here = _orient(saddr, _event_port(row.get("sport")), daddr,
+                                                   _event_port(row.get("dport")), direction, local)
+        if here and not loopback:
+            totals["stayed_on_pc_bytes"] += size
+            continue
+        totals["counted"] += events
+        totals[direction] += size
+        protocols[proto][direction] += size
+        who = _name_pid(pid, before, after, cache)
+        group = programs.setdefault(who["program"].lower(), {
+            "program": who["program"], "pids": set(), "protected": False, "ended": True, "in": 0, "out": 0,
+            "connections": set(), "peers": set()})
+        group[direction] += size
+        group["pids"].add(pid)
+        group["protected"] = group["protected"] or who["protected"]
+        group["ended"] = group["ended"] and who["ended"]
+        group["connections"].add((proto, lport, raddr, rport))
+        group["peers"].add(raddr)
+        remote = remotes.setdefault(raddr, {"address": raddr, "in": 0, "out": 0, "by_program": {}})
+        remote[direction] += size
+        remote["by_program"][who["program"]] = remote["by_program"].get(who["program"], 0) + size
+        conn = connections.setdefault((pid, proto, laddr, lport, raddr, rport), {
+            "pid": pid, "program": who["program"], "proto": proto, "laddr": laddr, "lport": lport,
+            "raddr": raddr, "rport": rport, "in": 0, "out": 0})
+        conn[direction] += size
+    grand = totals["in"] + totals["out"]
+    program_rows = []
+    for key, group in programs.items():
+        total = group["in"] + group["out"]
+        program_rows.append({
+            "program": group["program"], "pids": sorted(group["pids"]), "protected": group["protected"],
+            "ended": group["ended"], "in": group["in"], "out": group["out"], "total": total,
+            "share": round(total / grand, 4) if grand else 0.0,
+            "connections": len(group["connections"]), "peers": len(group["peers"]),
+            "note": PROGRAM_NOTES.get(key, "part of Windows" if group["protected"] else ""),
+        })
+    program_rows.sort(key=BYTES_SORT_KEYS["total"])
+    remote_rows = []
+    for remote in remotes.values():
+        by_program = sorted(remote["by_program"].items(), key=lambda item: (-item[1], item[0].lower()))
+        remote_rows.append({
+            "address": remote["address"], "scope": _scope(remote["address"]), "domain": "", "domain_source": "",
+            "in": remote["in"], "out": remote["out"], "total": remote["in"] + remote["out"],
+            "programs": [name for name, _ in by_program[:5]],
+        })
+    remote_rows.sort(key=lambda r: (-r["total"], r["address"]))
+    connection_rows = sorted(connections.values(), key=lambda c: (-(c["in"] + c["out"]), c["pid"], c["rport"] or 0))
+    return {"totals": totals, "programs": program_rows, "remotes": remote_rows, "protocols": protocols,
+            "connections": connection_rows[:BYTES_KEEP], "connections_total": len(connection_rows)}
+
+
+def _name_remotes(remotes):
+    """Fills in domain names for the internet addresses: the DNS cache first, then reverse lookups."""
+    internet = sorted(r["address"] for r in remotes if r["scope"] == "internet")
+    dns = _dns_names()
+    _resolve(internet, LOOKUP_BUDGET)
+    for remote in remotes:
+        if remote["scope"] == "internet":
+            remote["domain"], remote["domain_source"] = _domain(remote["address"], dns)
+
+
+def _measure(seconds, options):
+    """Runs the trace for `seconds` and returns the measurement. The session is stopped and the trace deleted
+    whatever happens."""
+    _note(options, f"measuring for {seconds} s with a Windows trace session ({KERNEL_NETWORK_NAME}). "
+                   "It is stopped and its file deleted when this is done; Ctrl+C ends it early.")
+    classes, check_note = _data_events(_provider_events())
+    if not classes:
+        raise NetmonError("Windows' list of events for the network trace provider does not match what this page counts, "
+                          "so it cannot measure bytes on this PC. " + (check_note or ""))
+    if not _stop_session():  # a session an earlier run left behind
+        raise NetmonError(f"a trace session called {BYTES_SESSION} is running and Windows would not stop it. "
+                          f"Stop it yourself with: logman stop {BYTES_SESSION} -ets")
+    folder = tempfile.mkdtemp(prefix="w11-net-")
+    etl = os.path.join(folder, "net.etl")
+    running = False
+    try:
+        _start_session(etl)
+        running = True
+        began = time.time()
+        before = _process_names()
+        interrupted = _wait(seconds)
+        after = _process_names()
+        elapsed = time.time() - began
+        local = _local_addresses()
+        running = not _stop_session()
+        if running:
+            raise NetmonError(f"Windows would not stop the trace session. Stop it yourself with: "
+                              f"logman stop {BYTES_SESSION} -ets")
+        _note(options, "reading the trace (this can take about as long as the measurement)...")
+        rows, summary = _read_trace(etl, classes)
+    finally:
+        if running:
+            _stop_session()
+        _remove(folder)
+    result = _summarize(rows, classes, local, before, after, options["loopback"])
+    result["totals"]["unreadable"] += int(summary.get("unparsed") or 0)
+    _name_remotes(result["remotes"])
+    return {
+        "window": {"started": round(began, 1), "seconds": round(elapsed, 1), "requested": seconds,
+                   "interrupted": interrupted, "loopback": options["loopback"]},
+        **result,
+        "events": {"read": int(summary.get("total") or 0),
+                   "seen": {item["id"]: item["count"] for item in summary.get("census") or []},
+                   "counted_ids": sorted(classes), "note": check_note},
+    }
+
+
+# -- showing a measurement ----------------------------------------------------------------------------------------
+def _bytes_notes(result):
+    """What the numbers mean, in plain sentences."""
+    window, totals = result["window"], result["totals"]
+    total = totals["in"] + totals["out"]
+    notes = []
+    if window["interrupted"]:
+        notes.append(f"stopped early, after {_elapsed(window['seconds'])}.")
+    if not totals["counted"]:
+        seen = result["events"]["seen"]
+        if seen:
+            notes.append(f"the trace held {result['events']['read']} events (ids {', '.join(sorted(seen, key=int))}) but "
+                         "none were data events this page counts. 'net bytes --json' lists them under events.")
+        else:
+            notes.append("no traffic events were captured. The PC may have been idle, or Windows produced no events "
+                         "for this provider. Nothing here is a guess: try again while something is downloading.")
+    else:
+        top = max(result["programs"], key=lambda g: g["total"])
+        if total >= MIB and top["total"] / total >= 0.6:
+            what = f" ({top['note']})" if top["note"] else ""
+            notes.append(f"{top['program']} accounts for {top['total'] / total:.0%} of the traffic{what}.")
+        uploading = [g for g in result["programs"] if g["out"] >= MIB and g["out"] > 2 * g["in"] and not g["protected"]]
+        for g in sorted(uploading, key=lambda g: -g["out"])[:3]:
+            notes.append(f"{g['program']} sent {_size(g['out'])} and received {_size(g['in'])}: mostly uploading. "
+                         "A backup, a sync, a call or a file share usually does this; check it is expected.")
+    if totals["stayed_on_pc_bytes"]:
+        notes.append(f"{_size(totals['stayed_on_pc_bytes'])} stayed on this PC and is not counted "
+                     "('net bytes --loopback' includes it).")
+    if totals["unreadable"]:
+        notes.append(f"{totals['unreadable']} event(s) could not be read and are not counted.")
+    if result["events"].get("note"):
+        notes.append(result["events"]["note"] + ".")
+    return notes
+
+
+def _show_bytes(result, options, when):
+    if options["json"]:
+        _core.print_json(result)
+        return
+    window, totals = result["window"], result["totals"]
+    total = totals["in"] + totals["out"]
+    rate = total / window["seconds"] if window["seconds"] else 0
+    lines = [CYAN + f"net bytes: {_size(total)} over {_elapsed(window['seconds'])} ({_size(totals['in'])} in, "
+             f"{_size(totals['out'])} out), {when}, about {_rate(rate)}" + RESET]
+    shown = result["programs"][:BYTES_ROWS]
+    colors = [RED if g["protected"] else GREY if g["ended"] else GREEN for g in shown]
+    table = _table(
+        ["program", "in", "out", "total", "share", "conns"],
+        [[g["program"] + (" (ended)" if g["ended"] and not g["program"].endswith("(ended)") else ""),
+          _size(g["in"]), _size(g["out"]), _size(g["total"]), f"{g['share']:.1%}", str(g["connections"])] for g in shown],
+        colors) if shown else ["  none"]
+    if len(result["programs"]) > len(shown):
+        table.append(GREY + f"  ... and {len(result['programs']) - len(shown)} more (--json has all of them)" + RESET)
+    lines += _section(0, "programs", table)
+    remotes = result["remotes"][:BYTES_REMOTES]
+    lines += _section(1, "top remote addresses", _table(
+        ["address", "name", "program", "in", "out", "total"],
+        [[r["address"], r["domain"] or ("local network" if r["scope"] == "local network" else "-"),
+          (r["programs"][0] + (f" +{len(r['programs']) - 1}" if len(r["programs"]) > 1 else "")) if r["programs"] else "-",
+          _size(r["in"]), _size(r["out"]), _size(r["total"])] for r in remotes],
+        [GREEN if r["scope"] == "internet" else YELLOW if r["scope"] == "local network" else GREY for r in remotes],
+    ) if remotes else ["  none"])
+    lines += _section(2, "protocols", _pairs([
+        (name, f"{_size(counts['in'])} in, {_size(counts['out'])} out") for name, counts in result["protocols"].items()
+    ], YELLOW))
+    lines += _section(3, "what this means", [f"  {text}" for text in _bytes_notes(result)] or ["  nothing unusual."])
+    lines += ["", GREY + "Counts are the data bytes Windows' network trace reported for this window; packet headers are "
+              "not included. 'net iface' shows totals per adapter." + RESET]
+    _say(lines)
+
+
+def _sorted_view(result, options, sort):
+    return dict(result, programs=sorted(result["programs"], key=BYTES_SORT_KEYS[sort], reverse=options["reverse"]))
+
+
+# -- the saved measurement, as the live lists use it ----------------------------------------------------------------
+def _last_measurement():
+    """The measurement net bytes saved last, or None."""
+    data = _win.load_json(BYTES_FILE)
+    if isinstance(data, dict) and isinstance(data.get("window"), dict) and isinstance(data.get("programs"), list):
+        return data
+    return None
+
+
+def _fresh_measurement():
+    """The saved measurement if it is recent enough to show next to the live lists, else None."""
+    data = _last_measurement()
+    if data and 0 <= time.time() - data["window"]["started"] <= BYTES_FRESH:
+        return data
+    return None
+
+
+def _measured_note(measured, noun):
+    if not measured:
+        return f"No {noun} yet: 'net bytes' measures them (administrator)."
+    window = measured["window"]
+    return (f"The {noun} come from 'net bytes', measured {_elapsed(time.time() - window['started'])} ago over "
+            f"{_elapsed(window['seconds'])} (run it again for a fresh count).")
+
+
+def _bytes_by_program(measured):
+    """program name in lower case -> {"in", "out", "total", "measured_at", "seconds"}; {} when there is no measurement."""
+    if not measured:
+        return {}
+    when, seconds = measured["window"]["started"], measured["window"]["seconds"]
+    return {g["program"].lower(): {"in": g["in"], "out": g["out"], "total": g["total"],
+                                   "measured_at": when, "seconds": seconds} for g in measured["programs"]}
+
+
+def _connection_bytes(measured, conn):
+    """What a measurement saw for one connection: {"in", "out", "match", "truncated", "measured_at", "seconds"}.
+    match is 'connection' (same program, protocol and ports), 'address' (same program and remote address, other
+    ports) or 'none'. None when there is no measurement or the connection has no remote end."""
+    if not measured or not conn["raddr"]:
+        return None
+    rows = measured.get("connections") or []
+    same = [m for m in rows if (m["pid"], m["proto"], m["lport"], m["raddr"], m["rport"]) ==
+            (conn["pid"], conn["proto"], conn["lport"], conn["raddr"], conn["rport"])]
+    near = [m for m in rows if m["pid"] == conn["pid"] and m["raddr"] == conn["raddr"]]
+    found, match = (same, "connection") if same else (near, "address") if near else ([], "none")
+    return {"in": sum(m["in"] for m in found), "out": sum(m["out"] for m in found), "match": match,
+            "truncated": measured.get("connections_total", len(rows)) > len(rows),
+            "measured_at": measured["window"]["started"], "seconds": measured["window"]["seconds"]}
+
+
+def _connection_bytes_text(measured, conn):
+    seen = _connection_bytes(measured, conn)
+    if seen is None:
+        return "-"
+    if seen["match"] == "none":
+        return "-" if seen["truncated"] else "0 B"
+    return _size(seen["in"] + seen["out"])
+
+
+def _connection_bytes_sentence(measured, conn):
+    seen = _connection_bytes(measured, conn)
+    if seen is None:
+        return "-"
+    when = f"net bytes, {_elapsed(time.time() - seen['measured_at'])} ago, over {_elapsed(seen['seconds'])}"
+    if seen["match"] == "none":
+        if seen["truncated"]:
+            return f"not among the busiest connections in the measurement ({when})"
+        return f"none seen ({when})"
+    where = "" if seen["match"] == "connection" else " to this address, on any port"
+    return f"{_size(seen['in'])} in, {_size(seen['out'])} out{where} ({when})"
+
+
+# -- the command ----------------------------------------------------------------------------------------------------
+BYTES_USAGE = "usage: net bytes [seconds] | net bytes last | net bytes clear   (seconds from 3 to 120; default 10)"
+
+
+def _bytes_seconds(word):
+    try:
+        value = int(word)
+    except ValueError:
+        raise NetmonError(BYTES_USAGE, 2)
+    if not BYTES_MIN <= value <= BYTES_MAX:
+        raise NetmonError(f"seconds must be from {BYTES_MIN} to {BYTES_MAX}", 2)
+    return value
+
+
+def _bytes_last(options, sort):
+    measured = _last_measurement()
+    if options["json"]:
+        _core.print_json(measured or {"window": None})
+        return 0
+    if not measured:
+        _say([CYAN + "no measurement saved yet. 'net bytes' makes one (administrator)." + RESET])
+        return 0
+    when = f"measured {_elapsed(time.time() - measured['window']['started'])} ago"
+    _show_bytes(_sorted_view(measured, options, sort), options, when)
+    return 0
+
+
+def _bytes_clear(options):
+    path = _win.data_dir() / BYTES_FILE
+    if not path.exists():
+        _say([CYAN + "no measurement saved." + RESET])
+        return 0
+    if not _core.confirm("Delete the saved net bytes measurement? [y/N]: ", options["yes"]):
+        print("cancelled")
+        return 0
+    try:
+        path.unlink()
+    except OSError as e:
+        raise NetmonError(f"could not delete the measurement: {e}", 1)
+    print("deleted the saved measurement.")
+    return 0
+
+
+def _bytes(rest, options):
+    sort = options.get("sort", "total")
+    if sort not in BYTES_SORTS:
+        raise NetmonError(f"--sort must be one of: {', '.join(BYTES_SORTS)}", 2)
+    word = rest[0].lower() if rest else ""
+    if word == "last" and len(rest) == 1:
+        return _bytes_last(options, sort)
+    if word in CLEAR_WORDS and len(rest) == 1:
+        return _bytes_clear(options)
+    if len(rest) > 1:
+        raise NetmonError(BYTES_USAGE, 2)
+    seconds = _bytes_seconds(rest[0]) if rest else BYTES_DEFAULT
+    _net.need_admin()
+    try:
+        result = _measure(seconds, options)
+    except KeyboardInterrupt:  # the session is already stopped and the trace deleted (see _measure)
+        raise NetmonError("cancelled. The trace session was stopped and its file deleted.", 1)
+    try:
+        _win.save_json(BYTES_FILE, result)
+    except _net.NetError as e:
+        _note(options, f"warning: {e}. 'net procs' will not show this measurement.")
+    _show_bytes(_sorted_view(result, options, sort), options,
+                f"measured at {time.strftime('%H:%M:%S', time.localtime(result['window']['started']))}")
+    return 0
+
+
+# ======================================================================
 # OPTIONS AND ROUTING
 # ======================================================================
-VALUE_FLAGS = {"--sort": "sort", "--state": "state", "--proto": "proto", "--process": "process", "--ip": "ip"}
-BOOL_FLAGS = {"--json": "json", "--yes": "yes", "--loopback": "loopback", "--reverse": "reverse"}
+VALUE_FLAGS ={"--sort": "sort", "--state": "state", "--proto": "proto", "--process": "process", "--ip": "ip"}
+BOOL_FLAGS = {"--json": "json", "--yes": "yes", "--loopback": "loopback", "--reverse": "reverse", "--bytes": "bytes"}
 
 
 def _parse(args):
     """(words, options) from the words after the name. Flags with a value take the next word."""
-    options = {"json": False, "yes": False, "loopback": False, "reverse": False}
+    options = {"json": False, "yes": False, "loopback": False, "reverse": False, "bytes": False}
     words = []
     index = 0
     while index < len(args):
@@ -1327,6 +1983,8 @@ def _dispatch(args):
         return _list(rest, options)
     if word in ("procs", "program", "programs", "prog"):
         return _procs(options)
+    if word == "bytes":
+        return _bytes(rest, options)
     if word in ("iface", "interface", "interfaces", "adapters", "usage"):
         return _iface(options)
     if word in ("history", "hist"):

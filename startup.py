@@ -26,6 +26,8 @@ import _core
 NAME = "startup"
 ALIASES = ["su", "start"]
 SUMMARY = "Enable or disable apps that start with Windows"
+# extra words people use, for 'settings search'
+KEYWORDS = ["boot", "login", "sign-in", "autostart", "slow startup", "run at startup"]
 USAGE = "su ls | su <id> | su <id> on|off | su rm <id>   (e.g. su 3 off)"
 HELP = [
     ("su ls", "list startup apps with their id and state"),

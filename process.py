@@ -33,6 +33,8 @@ import _core
 NAME = "process"
 ALIASES = ["prc"]
 SUMMARY = "List and kill running processes, with live system stats"
+# extra words people use, for 'settings search'
+KEYWORDS = ["task manager", "kill", "end task", "cpu", "memory", "ram", "frozen", "not responding"]
 USAGE = "prc ls [/verbose] | prc show <id> | prc kill <id>   (rm, remove, delete also work)"
 HELP = [
     ("prc ls", "programs, alphabetical, one id each, with a process count"),

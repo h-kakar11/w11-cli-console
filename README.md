@@ -13,7 +13,7 @@ py app.py
 
 | Setting | Aliases | What it does |
 |---|---|---|
-| brightness | `bn`, `b`, `bright`, `screen`, `monitor`, `display` | Screen brightness |
+| brightness | `bn`, `b`, `bright`, `screen`, `monitor` | Screen brightness |
 | volume | `vm`, `vol` | System and per-app volume |
 | startup | `su`, `start` | Apps that start with Windows |
 | apps | `app` | Installed apps, and uninstalling them |
@@ -30,7 +30,7 @@ py app.py
 | device | `dvc` | Devices and drivers, as in Device Manager: status, errors, tree, search, and turning a device on, off or restarting it |
 | firewall | `fw` | Windows Firewall: turn a network profile on or off, list the rules, and turn one rule on or off |
 | events | `evt` | Windows event logs: errors, crashes, shutdowns, boots, timelines, export and watch |
-| netmon | `net`, `net`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
+| netmon | `net`, `nm`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
 
 Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 

@@ -51,6 +51,8 @@ import _net
 NAME = "events"
 ALIASES = ["evt"]
 SUMMARY = "Windows event logs: errors, crashes, boots, timelines"
+# extra words people use, for 'settings search'
+KEYWORDS = ["event viewer", "log", "crash", "error", "bsod", "blue screen", "why did it restart"]
 USAGE = "evt errors | evt recent [N] | evt search <text> | evt inspect <record> | evt crashes | evt timeline <time>"
 HELP = [
     ("evt errors", "errors, critical events and warnings from the last day"),
