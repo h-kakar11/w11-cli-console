@@ -48,6 +48,8 @@ import _win
 NAME = "bluetooth"
 ALIASES = ["bt"]
 SUMMARY = "Bluetooth: devices, pairing, removal and the radio"
+# extra words people use, for 'settings search'
+KEYWORDS = ["pair", "headphones", "earbuds", "mouse", "keyboard", "wireless", "airpods", "radio", "unpair"]
 USAGE = ("bt | bt on|off | bt ls | bt <id> | bt scan [sec] | bt pair <n|name|address> | bt rm <id> | bt why | "
          "bt service [restart] | bt connect|disconnect <id> | bt send|receive | bt more | bt open")
 HELP = [

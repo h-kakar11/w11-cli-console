@@ -7,3 +7,6 @@ winrt-Windows.Foundation.Collections
 winrt-Windows.Networking
 winrt-Windows.Networking.Connectivity
 winrt-Windows.Networking.NetworkOperators
+winrt-Windows.Devices.Bluetooth
+winrt-Windows.Devices.Enumeration
+winrt-Windows.Devices.Radios

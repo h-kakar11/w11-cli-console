@@ -53,6 +53,8 @@ import _win
 NAME = "environment"
 ALIASES = ["env", "vars"]
 SUMMARY = "Environment variables and PATH, with backup and undo"
+# extra words people use, for 'settings search'
+KEYWORDS = ["variables", "path", "env", "setx", "java_home", "system variables", "user variables"]
 USAGE = ("env ls | env <name|id> | env set <NAME> <value> [--system] | env rm <NAME|id> | env path [add|rm|move|clean] | "
          "env where <name> | env find <text> | env expand <text> | env backups | env undo | env diff")
 HELP = [

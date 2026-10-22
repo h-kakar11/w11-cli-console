@@ -52,6 +52,9 @@ import _win
 NAME = "update"
 ALIASES = ["wu", "winupdate", "updates"]
 SUMMARY = "Windows Update: pending, history, install and pause"
+# extra words people use, for 'settings search'
+KEYWORDS = ["windows update", "patch", "kb", "pending", "pause updates", "restart", "driver update", "hotfix",
+            "stuck"]
 USAGE = ("wu | wu ls | wu <id|KB> | wu install <id>|all|drivers | wu history [n] | wu failed | wu installed | "
          "wu hide|unhide <id> | wu hidden | wu uninstall <KB> | wu pause [days] | wu resume | wu options | "
          "wu drivers [on|off] | wu services | wu why | wu open [page]")

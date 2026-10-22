@@ -59,6 +59,9 @@ import process as process_page  # the same rule prc uses for system programs
 NAME = "netmon"
 ALIASES = ["net", "nm", "traffic"]
 SUMMARY = "Network monitor: connections, programs, bytes, blocks"
+# extra words people use, for 'settings search'
+KEYWORDS = ["bandwidth", "traffic", "connections", "ports", "netstat", "who is using the network",
+            "data usage", "bytes"]
 USAGE = ("net | net live [sec] | net ls [options] | net <id> | net procs | net bytes [sec] | net iface | net history | "
          "net kill <id> | net block <id|ip>")
 HELP = [
@@ -1809,7 +1812,7 @@ def _last_measurement():
 def _fresh_measurement():
     """The saved measurement if it is recent enough to show next to the live lists, else None."""
     data = _last_measurement()
-    if data and 0 <= time.time() - data["window"]["started"] <= BYTES_FRESH:
+    if data and -1 <= time.time() - data["window"]["started"] <= BYTES_FRESH:  # started is rounded, so it can lead by 0.05 s
         return data
     return None
 

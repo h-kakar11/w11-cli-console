@@ -44,6 +44,9 @@ import _win
 NAME = "privacy"
 ALIASES = ["priv", "perm", "permissions"]
 SUMMARY = "App permissions: camera, microphone, location and more"
+# extra words people use, for 'settings search'
+KEYWORDS = ["camera", "webcam", "microphone", "mic", "permissions", "tracking", "telemetry", "advertising",
+            "who is using my camera", "diagnostic data"]
 USAGE = ("priv | priv now | priv recent [days] | "
          "priv <permission> [on|off | <id> [on|off] | desktop|device [on|off]] | priv why <permission> [<id>] | "
          "priv app <text> [off] | priv sensitive | priv general [<setting> [on|off]] | priv open [<page>]")

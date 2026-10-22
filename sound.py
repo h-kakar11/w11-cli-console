@@ -50,6 +50,9 @@ import _win
 NAME = "sound"
 ALIASES = ["snd", "audio"]
 SUMMARY = "Default sound devices, device volume, and levels"
+# extra words people use, for 'settings search'
+KEYWORDS = ["speakers", "headphones", "microphone", "mic", "output", "input", "default device", "playback",
+            "recording", "audio", "no sound"]
 USAGE = ("snd | snd <id> | snd default <id> [role] | snd <id> volume <0-100> | snd <id> mute|unmute|toggle | "
          "snd out|in | snd level | snd test | snd why [out|in] | snd mono | snd startup | snd classic | snd open")
 HELP = [

@@ -52,6 +52,9 @@ import _win
 NAME = "display"
 ALIASES = ["dsp", "res", "resolution"]
 SUMMARY = "Resolution, refresh rate, HDR, layout and scale"
+# extra words people use, for 'settings search'
+KEYWORDS = ["monitor", "resolution", "refresh rate", "hz", "hdr", "night light", "scale", "dpi", "rotate",
+            "orientation", "multiple monitors", "extend", "duplicate", "screen"]
 USAGE = ("dsp | dsp <id> | dsp <id> modes | dsp <id> res <W>x<H> [@hz] | dsp <id> hz <hz> | dsp <id> rotate 0|90|180|270 | "
          "dsp <id> primary | dsp <id> right-of|left-of|above|below <id> | dsp <id> pos <x> <y> | dsp <id> hdr on|off | "
          "dsp project extend|duplicate|internal|external | dsp layout | dsp scale | dsp nightlight | dsp brightness [n]")

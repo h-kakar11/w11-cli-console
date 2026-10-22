@@ -53,6 +53,8 @@ import _win
 NAME = "device"
 ALIASES = ["dvc"]
 SUMMARY = "Devices, their status and drivers (Device Manager)"
+# extra words people use, for 'settings search'
+KEYWORDS = ["device manager", "driver", "hardware", "usb", "devmgmt", "rollback driver", "backup drivers"]
 USAGE = ("device ls | device <id> | device <id> enable|disable|restart | device errors | device drivers | "
          "device driver add <inf>|rm <id> | device tree | device search <text> | device rescan | "
          "device rollback <id> | device drivers export <folder> [<id>] | device backup [file|ls|rm <n>] | "

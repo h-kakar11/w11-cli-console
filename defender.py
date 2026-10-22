@@ -53,6 +53,9 @@ import _win
 NAME = "defender"
 ALIASES = ["def", "av", "wd"]
 SUMMARY = "Windows Defender: status, scans, protection, exclusions"
+# extra words people use, for 'settings search'
+KEYWORDS = ["antivirus", "virus", "malware", "scan", "security", "windows security", "threat", "ransomware",
+            "smartscreen", "exclusion", "quarantine"]
 USAGE = ("def | def why | def scan [quick|full|<path>] | def update | def threats | def on|off <protection> | "
          "def exclusions | def folders | def schedule | def events | def open")
 HELP = [
