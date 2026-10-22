@@ -1147,7 +1147,8 @@ def _ps_value(value):
 
 
 def _policy_hit(spec, policy):
-    return spec.policy if spec.policy and spec.policy in policy else None
+    lowered = {name.lower() for name in policy}  # registry names are not case-sensitive
+    return spec.policy if spec.policy and spec.policy.lower() in lowered else None
 
 
 def _show_switch(spec, options):
@@ -1381,8 +1382,8 @@ def _folders_cmd(words, options):
         _core.print_json({"state": state, "protected_folders": protected, "allowed_apps": allowed})
         return 0
     _net.render(f"controlled folder access: {state}", [
-        ("guarded", ["Documents, Pictures, Videos, Music, Desktop (always)"] + protected),
-        ("trusted apps you added", allowed or "none"),
+        ("guarded", [("always", "Documents, Pictures, Videos, Music, Desktop"), ("added by you", protected or "none")]),
+        ("trusted apps", [("added by you", allowed or "none")]),
         ("change it with", [("def folders on|off|audit", "turn it on, off, or log without blocking"),
                             ("def folders add <dir> | rm <dir>", "guard another folder"),
                             ("def folders allow <app.exe> | disallow <app.exe>", "let one program through")]),
