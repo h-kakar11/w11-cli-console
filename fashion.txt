@@ -560,6 +560,11 @@ OPEN ISSUES (things a future prompt may be about)
   survives a sign-out, and the save with UPDATEREGISTRY|NORESET causes no second flicker; right-of and primary (the staging then the
   NULL commit) and their timeout revert; hdr against Settings' "Use HDR" on 24H2; DMDO_90 is what Settings calls Portrait;
   "dsp project" with a second screen including the DisplaySwitch.exe fallback; "connected but not in use" after project internal.
+  Reviewer notes: arrangement changes (primary, pos, placement) are saved to the registry before the 15 s question and put back
+  by the program, so a kill during the wait leaves the new layout; res, hz and rotate are really unsaved (flag 0), but whether a
+  flag-0 mode survives its process dying is undocumented; the orientation labels (DMDO_90 vs "Portrait") are disputed in the docs;
+  a display left of or above the primary keeps its x and y when resized (Windows may refuse or snap it); the page sets argtypes on the
+  shared ctypes.windll.user32, which other pages also use; in duplicate mode several paths share one source and the page keeps the last.
 - bluetooth: not run on Windows. Check: the pywinrt names (find_all_async, create_watcher, add_added, add_pairing_requested,
   get_deferral, accept(pin), unpair_async) and the enum names; that properties map values arrive as plain Python types; that
   DeviceInformation.pairing.custom.pair_async works from a console app (Windows may show its own prompt); the battery property

@@ -21,9 +21,10 @@ Display. Routed from app.py ("display", "dsp", "res" or "resolution").
 Without an id the main display is used, so "dsp res 1920x1080" and "res 1080p" change the main display.
 Nothing here needs administrator rights.
 
-A change to the picture can leave the screen black, so res, hz, rotate, primary, pos and placement are applied
-first without being saved, and Windows' own rule is followed: the old setting comes back by itself after 15
-seconds unless y is pressed. With --yes (an agent whose person already agreed) the change is tested and saved
+A change to the picture can leave the screen black, so Windows' own rule is followed: the old setting comes back
+after 15 seconds unless y is pressed. res, hz and rotate are applied without being saved. primary, pos and placement
+have to be saved to be applied together, so they are put back by this program if the answer is no or the time runs
+out; if this program is killed during the 15 seconds, the new arrangement stays (fix it with 'dsp layout'). With --yes (an agent whose person already agreed) the change is tested and saved
 straight away. Where a console is not available, the change is only made after a y/N question.
 
 Everything goes through the documented display functions in user32 and shcore (EnumDisplayDevices,
@@ -78,8 +79,8 @@ HELP = [
     ("dsp identify", "which display is which, and where each one sits"),
     ("dsp open", "open Settings > System > Display"),
 ]
-TIP = ("Nothing here needs administrator rights. A change to the picture goes back by itself after 15 seconds unless you "
-       "press y, so you cannot get stuck on a black screen. Ids shift when a display is plugged in or out: run 'dsp' first. "
+TIP = ("Nothing here needs administrator rights. A change to the picture goes back after 15 seconds unless you "
+       "press y, so a bad mode does not leave you on a black screen. Ids shift when a display is plugged in or out: run 'dsp' first. "
        "Without an id, the main display is used.")
 RUN_ALONE = True  # typing 'dsp' on its own lists the displays, which changes nothing
 
@@ -1186,11 +1187,11 @@ def _apply_mode(row, wanted, options):
             answer = _keep_prompt(options)
         finally:
             if answer != "yes":
-                if _change(device, old, 0) != 0:  # the old mode must come back, whatever happened
+                if _change(device, old, 0) not in (0, RESTART_NEEDED):  # the old mode must come back, whatever happened
                     print(f"could not restore {label}: run 'dsp {row['id']} res {before['width']}x{before['height']} "
                           f"{before['hz']}'", file=sys.stderr)
         if answer == "yes":
-            if _change(device, new, CDS_UPDATEREGISTRY | CDS_NORESET) != 0:
+            if _change(device, new, CDS_UPDATEREGISTRY | CDS_NORESET) not in (0, RESTART_NEEDED):
                 note = " It could not be saved, so it will go back after a restart."
         else:
             outcome = "reverted" if answer == "timeout" else "cancelled"
@@ -1342,9 +1343,9 @@ def _arrange(displays, positions, new_primary, options, what):
         outcome = "kept"
     elif _has_console():
         _say(options, f"{what}...")
-        _stage(new_plan, prime["device"])
         answer = "no"
         try:
+            _stage(new_plan, prime["device"])  # inside the try: a half-staged layout is put back too
             answer = _keep_prompt(options)
         finally:
             if answer != "yes":
