@@ -1010,14 +1010,14 @@ def _scan_target(word, options):
     return matches[0]
 
 
-def _answer_request(rt, args, name, extras):
+def _answer_request(rt, args, name, extras, options):
     """Answer one question Windows asks during pairing. Anything not accepted counts as a refusal."""
     kind = _name(rt["kinds"], args.pairing_kind)
     if kind == "CONFIRM_ONLY":
-        print("Windows may show its own 'Connect' prompt: accept it.")
+        _say(options, "Windows may show its own 'Connect' prompt: accept it.")
         args.accept()
     elif kind == "DISPLAY_PIN":
-        print(f"type this code on {name}: {args.pin}")
+        _say(options, f"type this code on {name}: {args.pin}")
         args.accept()
     elif kind == "PROVIDE_PIN":
         pin = extras["pin"]
@@ -1029,23 +1029,23 @@ def _answer_request(rt, args, name, extras):
         if pin:
             args.accept(pin)
         else:
-            print("no PIN, so the pairing is not accepted")
+            _say(options, "no PIN, so the pairing is not accepted")
     elif kind == "CONFIRM_PIN_MATCH":
         shown = str(args.pin)
         if extras["code"]:
             same = extras["code"] == shown
-            print("the code you gave " + ("matches" if same else "does NOT match") + f" the one Windows shows ({shown})")
+            _say(options, "the code you gave " + ("matches" if same else "does NOT match") + f" the one Windows shows ({shown})")
         else:
-            print(f"Windows shows the code {shown}.")
+            _say(options, f"Windows shows the code {shown}.")
             # never answered by --yes: confirming a code is how you know no one else is in the middle
-            same = _core.confirm(f"Does {name} show the same code, {shown}? [y/N]: ", False)
+            same = _confirm(f"Does {name} show the same code, {shown}? [y/N]: ", {**options, "yes": False})
         if same:
             args.accept()
     else:
-        print(f"Windows asked for something this page cannot do ({kind.lower()}). Use 'bt open'.")
+        _say(options, f"Windows asked for something this page cannot do ({kind.lower()}). Use 'bt open'.")
 
 
-def _run_pairing(rt, custom, name, extras):
+def _run_pairing(rt, custom, name, extras, options):
     """PairAsync, with Windows' questions queued by the handler (it runs on a thread Windows owns) and answered here."""
     requests, problems = queue.Queue(), []
 
@@ -1078,7 +1078,7 @@ def _run_pairing(rt, custom, name, extras):
                 await asyncio.sleep(0.1)
                 continue
             try:
-                _answer_request(rt, args, name, extras)
+                _answer_request(rt, args, name, extras, options)
             finally:
                 deferral.complete()
         return task.result()
@@ -1123,7 +1123,7 @@ def _pair(words, options, extras):
         raise BluetoothError(f"Windows says it cannot pair with {name} right now. Put the device in pairing mode, "
                              "then run 'bt scan' again.")
     _say(options, f"pairing with {label}...")
-    result = _run_pairing(rt, pairing.custom, name, extras)
+    result = _run_pairing(rt, pairing.custom, name, extras, options)
     status = _name(rt["pair_status"], result.status)
     if status not in ("PAIRED", "ALREADY_PAIRED"):
         raise BluetoothError(f"could not pair with {name}: {PAIR_PROBLEMS.get(status, status.lower())}")

@@ -590,8 +590,8 @@ def _judge(p):
                                 "settings.", "def open settings"))
         age = sig["age_days"]
         if sig["out_of_date"] or (age is not None and age >= OLD_DAYS):
-            out.append(_finding("bad", "signatures", f"The virus signatures are {_plural(age, 'day') if age is not None else 'out of date'}"
-                                " old.", "def update"))
+            out.append(_finding("bad", "signatures", "The virus signatures are " + (
+                f"{_plural(age, 'day')} old." if age is not None else "out of date."), "def update"))
         elif age is not None and age >= STALE_DAYS:
             out.append(_finding("warn", "signatures", f"The virus signatures are {_plural(age, 'day')} old.", "def update"))
         ages = [item["age_days"] for item in (scans["quick"], scans["full"]) if item["last"]]
@@ -600,9 +600,9 @@ def _judge(p):
         elif min(ages) >= SCAN_OLD_DAYS:
             out.append(_finding("warn", "scan", f"The last scan was {_plural(min(ages), 'day')} ago.", "def scan"))
         if p["threats"]["active"]:
-            out.append(_finding("bad", "threats", f"{_plural(p['threats']['active'], 'threat')} found by Defender "
-                                "{is} still active.".replace("{is}", "is" if p["threats"]["active"] == 1 else "are"),
-                                "def threats"))
+            count = p["threats"]["active"]
+            out.append(_finding("bad", "threats", f"{_plural(count, 'threat')} found by Defender "
+                                f"{'is' if count == 1 else 'are'} still active.", "def threats"))
         for key, label in (("pua", "Blocking of unwanted apps"), ("network", "Network protection"),
                            ("folders", "Controlled folder access")):
             if protection[key] == "off":
@@ -1016,3 +1016,700 @@ def _update_cmd(options):
     else:
         print(f"already up to date: version {after['version']} ({_when(after['updated'])}).")
     return 0
+
+
+# ======================================================================
+# THREATS — what Defender found, and what it did about it
+# ======================================================================
+def _resource(text):
+    """Defender writes resources as 'file:_C:\\path'; the part before ':_' says what kind of thing it is."""
+    return re.sub(r"^[A-Za-z]+:_", "", text or "")
+
+
+def _threat_rows(reading):
+    """Detections joined to their threat, newest first and numbered from 1 (the list and the ids both come from here)."""
+    threats = {row.get("ThreatID"): row for row in reading.rows("threats")}
+    rows = []
+    for det in reading.rows("detections"):
+        threat = threats.get(det.get("ThreatID"), {})
+        status = THREAT_STATUS.get(det.get("ThreatStatusID"), f"status {det.get('ThreatStatusID')}")
+        rows.append({
+            "name": threat.get("ThreatName") or f"threat {det.get('ThreatID')}",
+            "severity": SEVERITY.get(threat.get("SeverityID"), "unknown"), "status": status,
+            "active": bool(threat.get("IsActive")), "action": CLEAN_ACTIONS.get(det.get("CleaningActionID")),
+            "action_succeeded": det.get("ActionSuccess"), "detected": det.get("InitialDetectionTime"),
+            "changed": det.get("LastThreatStatusChangeTime"), "user": det.get("DomainUser"),
+            "process": det.get("ProcessName"), "resources": [_resource(r) for r in _list(det.get("Resources"))],
+        })
+    rows.sort(key=lambda row: row["changed"] or row["detected"] or "", reverse=True)
+    for number, row in enumerate(rows, start=1):
+        row["id"] = number
+    return rows
+
+
+def _threat_color(row):
+    if row["active"] or row["status"] not in HANDLED:
+        return _net.RED
+    return _net.GREEN
+
+
+def _threats_cmd(words, options):
+    reading = _read(["threats", "detections"])
+    if reading.failed("detections"):
+        raise DefenderError(f"could not read the threat history ({reading.reason('detections')})")
+    rows = _threat_rows(reading)
+    if len(words) > 1:
+        raise DefenderError("usage: def threats [all|<id>]", 2)
+    if words and words[0].isdigit():
+        row = next((r for r in rows if r["id"] == int(words[0])), None)
+        if row is None:
+            raise DefenderError(f"no threat with id {words[0]}. Run 'def threats' to see them.", 2)
+        if options["json"]:
+            _core.print_json(row)
+            return 0
+        _net.render(row["name"], [
+            ("threat", [("severity", row["severity"]), ("status", row["status"]), ("still active", row["active"]),
+                        ("action", row["action"]), ("action worked", row["action_succeeded"])]),
+            ("where", [("files", row["resources"] or "-"), ("program", row["process"]), ("user", row["user"])]),
+            ("when", [("found", _when(row["detected"])), ("last change", _when(row["changed"]))]),
+        ])
+        return 0
+    if words and words[0].lower() != "all":
+        raise DefenderError("usage: def threats [all|<id>]", 2)
+    shown = rows if words else rows[:30]
+    if options["json"]:
+        _core.print_json({"total": len(rows), "threats": shown})
+        return 0
+    if not rows:
+        print(_net.GREEN + "Defender has not found any threats on this PC." + _net.RESET)
+        return 0
+    print(f"{'ID':<5}{'THREAT':<42}{'SEVERITY':<10}{'STATUS':<18}FOUND")
+    for row in shown:
+        print(_threat_color(row) + f"{row['id']:<5}{row['name'][:40]:<42}{row['severity']:<10}{row['status']:<18}"
+              f"{_win.ago(row['detected'])}" + _net.RESET)
+    print(f"\n{len(rows)} detection(s). 'def threats <id>' shows the files and what Defender did.")
+    return 0
+
+
+def _quarantine_cmd(words, options):
+    if words and words[0].lower() == "restore":
+        print("Restoring something from quarantine puts a file Defender judged dangerous back on this PC, so it is "
+              "done in the Windows Security app: Protection history > the item > Actions.")
+        _open_page("history", options)
+        return 0
+    if words and words[0].lower() in REMOVE_WORDS:
+        raise DefenderError("Windows can only remove every active threat at once, not one. Use 'def clean'.", 2)
+    if words:
+        raise DefenderError("usage: def quarantine", 2)
+    reading = _read(["threats", "detections"])
+    rows = [row for row in _threat_rows(reading) if row["active"] or row["status"] in ("quarantined", "detected")]
+    if options["json"]:
+        _core.print_json({"threats": rows})
+        return 0
+    if not rows:
+        print(_net.GREEN + "nothing is active or in quarantine." + _net.RESET)
+        return 0
+    for row in rows:
+        print(_threat_color(row) + f"{row['id']:<5}{row['name'][:40]:<42}{row['status']:<14}"
+              f"{', '.join(row['resources'])[:60]}" + _net.RESET)
+    print("\n'def clean' removes the active ones. Restoring is done in the Windows Security app ('def open history').")
+    return 0
+
+
+def _clean_cmd(options):
+    _net.need_admin()
+    reading = _read(["threats"])
+    active = [row for row in reading.rows("threats") if row.get("IsActive")]
+    if not active:
+        print("no threat is active, so there is nothing to remove.")
+        return 0
+    names = ", ".join(str(row.get("ThreatName")) for row in active[:5])
+    if not _core.confirm(f"Remove {_plural(len(active), 'active threat')} ({names})? Windows Defender removes or "
+                         "quarantines the files it blocks them in, and a file you needed can go with them. "
+                         "This cannot be undone from here (quarantined files can be restored in the Windows Security "
+                         "app). [y/N]: ", options["yes"]):
+        print("cancelled")
+        return 0
+    print("removing active threats...")
+    _win.powershell("Remove-MpThreat", timeout=300)
+    left = sum(1 for row in _read(["threats"]).rows("threats") if row.get("IsActive"))
+    print(f"{_plural(left, 'threat')} still active." if left else "no threat is active now.")
+    return 0
+
+
+# ======================================================================
+# PROTECTION SWITCHES — def on|off <protection>, def <protection> [value]
+# ======================================================================
+def _ps_value(value):
+    if isinstance(value, bool):
+        return "$true" if value else "$false"
+    return str(int(value))
+
+
+def _policy_hit(spec, policy):
+    return spec.policy if spec.policy and spec.policy in policy else None
+
+
+def _show_switch(spec, options):
+    reading = _read(["status", "prefs"])
+    status, prefs = reading.row("status"), reading.row("prefs")
+    state = spec.state(status, prefs)
+    policy = _policy_values()
+    managed = _policy_hit(spec, policy)
+    if options["json"]:
+        _core.print_json({"name": spec.key, "title": spec.title, "state": state, "what": spec.what,
+                          "words": [w for w in spec.words], "set_by_policy": bool(managed),
+                          "tamper_protected": bool(status.get("IsTamperProtected")) if spec.tamper else False})
+        return 0
+    color = _net.GREEN if state not in ("off", "unknown") else _net.YELLOW
+    print(color + f"{spec.title}: {state}" + _net.RESET)
+    print(f"  it {spec.what}.")
+    if managed:
+        print(f"  A policy sets this ({managed}), so changes here may be refused.")
+    if spec.tamper and status.get("IsTamperProtected"):
+        print("  Tamper Protection is on: it can only be turned off in the Windows Security app (def open settings).")
+    print(f"  change it: {spec.usage()}")
+    return 0
+
+
+def _set_switch(spec, word, options):
+    """Set one protection to the value for `word`, then read back what Windows says."""
+    word = word.lower()
+    if word not in spec.words:
+        raise DefenderError(f"usage: {spec.usage()}", 2)
+    value = spec.words[word]
+    _net.need_admin()
+    reading = _read(["status", "prefs"])
+    status, prefs = reading.row("status"), reading.row("prefs")
+    old = spec.state(status, prefs)
+    new = spec.word_of(value)
+    if old == new:
+        print(f"{spec.title} is already {new}.")
+        return 0
+    hit = _policy_hit(spec, _policy_values())
+    if hit:
+        raise DefenderError(f"a policy sets {spec.title} ({POLICY_KEY}\\{hit}), so this PC will not take a change here. "
+                            "Ask whoever manages it.")
+    lowering = spec.lowers(old, new)
+    if lowering and spec.tamper and status.get("IsTamperProtected"):
+        raise DefenderError(f"Tamper Protection is on, and it stops anything but the Windows Security app from "
+                            f"weakening {spec.title}. Turn Tamper Protection off there first ('def open settings'), "
+                            "then run this again.")
+    if lowering:
+        if not _core.confirm(f"Turn {spec.title} {new}? {spec.risk} To undo: 'def {spec.key} {spec.on_word}'. [y/N]: ",
+                             options["yes"]):
+            print("cancelled")
+            return 0
+    elif spec.ask_on and new != "off":
+        if not _core.confirm(f"Turn {spec.title} {new}? Apps Windows does not trust will be blocked from changing files "
+                             "in Documents, Pictures, Videos, Music and Desktop, and a program you use may stop saving "
+                             "there. To let one through: 'def folders allow <program.exe>'. To undo: 'def folders off'. "
+                             "[y/N]: ", options["yes"]):
+            print("cancelled")
+            return 0
+    print(f"setting {spec.title} to {new}...")
+    _win.powershell(f"Set-MpPreference -{spec.pref} {_ps_value(value)}")
+    now_reading = _read(["status", "prefs"])
+    now = spec.state(now_reading.row("status"), now_reading.row("prefs"))
+    if options["json"]:
+        _core.print_json({"name": spec.key, "requested": new, "state": now, "changed": now == new})
+    elif now == new:
+        print(f"{spec.title} is now {now}.")
+    else:
+        print(f"{spec.title} is still {now}: Windows did not accept the change.")
+        if now_reading.row("status").get("IsTamperProtected"):
+            print("  Tamper Protection is on. Change it in the Windows Security app: 'def open settings'.")
+        elif _policy_values():
+            print("  This PC has Defender policies, which may be holding it: 'def why' lists them.")
+        elif now_reading.row("status").get("AMRunningMode") and any(
+                w in str(now_reading.row("status").get("AMRunningMode")).lower() for w in PASSIVE_WORDS):
+            print("  Defender is in passive mode because another antivirus is in charge.")
+    return 0 if now == new else 1
+
+
+def _switch_cmd(key, rest, options):
+    spec = SWITCHES[key]
+    if not rest:
+        return _show_switch(spec, options)
+    if len(rest) != 1:
+        raise DefenderError(f"usage: {spec.usage()}", 2)
+    return _set_switch(spec, rest[0], options)
+
+
+def _on_off_cmd(rest, on, options):
+    if len(rest) != 1 or rest[0].lower() not in SWITCHES:
+        raise DefenderError(f"usage: def {'on' if on else 'off'} <{'|'.join(SWITCH_ORDER)}>", 2)
+    spec = SWITCHES[rest[0].lower()]
+    return _set_switch(spec, spec.on_word if on else spec.off_word, options)
+
+
+def _tamper_cmd(options):
+    status = _read(["status"]).row("status")
+    state = _onoff(status.get("IsTamperProtected"))
+    if options["json"]:
+        _core.print_json({"state": state, "source": status.get("TamperProtectionSource")})
+        return 0
+    print(f"tamper protection: {state}")
+    print("  It stops other programs, scripts and the registry from turning off real-time, behaviour, download and "
+          "cloud protection.")
+    print("  It can only be changed in the Windows Security app, on purpose: 'def open settings' opens it.")
+    return 0
+
+
+# ======================================================================
+# LISTS — exclusions, controlled folder access, attack surface reduction
+# ======================================================================
+KIND_PARAMS = {"path": ("ExclusionPath", "folder or file"), "ext": ("ExclusionExtension", "extension"),
+               "process": ("ExclusionProcess", "process")}
+KIND_WORDS = {"path": "path", "folder": "path", "file": "path", "dir": "path", "ext": "ext", "extension": "ext",
+              "process": "process", "proc": "process", "exe": "process"}
+
+
+def _exclusion_rows(reading):
+    """Every exclusion, paths then extensions then processes, numbered from 1. None if Windows hides the list."""
+    row = reading.row("exclusions")
+    lists = {kind: _list(row.get(param)) for kind, (param, _) in KIND_PARAMS.items()}
+    if any(_hidden(items) for items in lists.values()):
+        return None
+    rows = []
+    for kind in KIND_PARAMS:
+        for value in sorted(lists[kind], key=str.lower):
+            rows.append({"kind": kind, "value": value})
+    for number, item in enumerate(rows, start=1):
+        item["id"] = number
+    return rows
+
+
+def _exclusions_cmd(words, options):
+    if words and words[0].lower() == "add":
+        return _exclusion_add(words[1:], options)
+    if words and words[0].lower() in REMOVE_WORDS:
+        return _exclusion_remove(words[1:], options)
+    if words:
+        raise DefenderError("usage: def exclusions [add path|ext|process <value> | rm <id>]", 2)
+    reading = _read(["exclusions"])
+    rows = _exclusion_rows(reading) if not reading.failed("exclusions") else None
+    if rows is None:
+        why = "needs administrator rights" if not _core.is_admin() else "hidden by a policy"
+        if options["json"]:
+            _core.print_json({"hidden": why, "exclusions": []})
+        else:
+            print(f"the exclusion list is not available: Windows keeps it from this terminal ({why}).")
+        return 0
+    if options["json"]:
+        _core.print_json({"hidden": None, "exclusions": rows})
+        return 0
+    if not rows:
+        print(_net.GREEN + "no exclusions: Defender looks everywhere." + _net.RESET)
+        return 0
+    print(f"{'ID':<5}{'KIND':<16}EXCLUDED")
+    for row in rows:
+        print(f"{row['id']:<5}{KIND_PARAMS[row['kind']][1]:<16}{row['value']}")
+    print("\nAn exclusion is a place Defender does not look. 'def exclusions rm <id>' removes one.")
+    return 0
+
+
+def _exclusion_add(words, options):
+    if len(words) < 2 or words[0].lower() not in KIND_WORDS:
+        raise DefenderError("usage: def exclusions add path|ext|process <value>", 2)
+    kind, value = KIND_WORDS[words[0].lower()], " ".join(words[1:]).strip().strip('"')
+    if not value or any(ord(ch) < 32 for ch in value):
+        raise DefenderError("that value is empty or has control characters", 2)
+    if kind == "ext":
+        value = "." + value.lstrip(".").lower()
+        if not re.fullmatch(r"\.[A-Za-z0-9_-]{1,20}", value):
+            raise DefenderError("an extension is letters and digits, such as .iso", 2)
+    risky = (kind == "ext" and value in RISKY_EXTENSIONS) or (kind == "path" and BROAD_PATH.match(value)) or \
+        (kind == "process" and value in ("*", "*.exe"))
+    _net.need_admin()
+    parameter, label = KIND_PARAMS[kind]
+    if not _core.confirm(f"Exclude {label} '{value}' from scanning? Defender will not look there, and malware can hide in "
+                         f"an excluded place. To undo: 'def exclusions rm <id>' (see 'def exclusions'). [y/N]: ",
+                         options["yes"]):
+        print("cancelled")
+        return 0
+    if risky and not _core.confirm(f"'{value}' covers a lot: a whole drive, a system folder, or a kind of file that "
+                                   "programs run from. Malware loves that. Exclude it anyway? [y/N]: ", options["yes"]):
+        print("cancelled")
+        return 0
+    print(f"excluding {value}...")
+    _win.powershell(f"Add-MpPreference -{parameter} $env:W11_VALUE", env={"W11_VALUE": value})
+    rows = _exclusion_rows(_read(["exclusions"])) or []
+    found = next((r for r in rows if r["kind"] == kind and r["value"].lower() == value.lower()), None)
+    if options["json"]:
+        _core.print_json({"added": bool(found), "exclusion": found})
+    elif found:
+        print(f"excluded: {label} '{found['value']}' (id {found['id']}).")
+    else:
+        print("Windows did not list the exclusion afterwards. Tamper Protection or a policy may be blocking it.")
+    return 0 if found else 1
+
+
+def _exclusion_remove(words, options):
+    if len(words) != 1 or not words[0].isdigit():
+        raise DefenderError("usage: def exclusions rm <id>", 2)
+    _net.need_admin()
+    rows = _exclusion_rows(_read(["exclusions"]))
+    if rows is None:
+        raise DefenderError("Windows hides the exclusion list from this terminal (a policy may be hiding it)")
+    row = next((r for r in rows if r["id"] == int(words[0])), None)
+    if row is None:
+        raise DefenderError(f"no exclusion with id {words[0]}. Run 'def exclusions' to see them.", 2)
+    parameter, label = KIND_PARAMS[row["kind"]]
+    print(f"removing the exclusion for {row['value']}...")
+    _win.powershell(f"Remove-MpPreference -{parameter} $env:W11_VALUE", env={"W11_VALUE": row["value"]})
+    left = _exclusion_rows(_read(["exclusions"])) or []
+    gone = not any(r["kind"] == row["kind"] and r["value"] == row["value"] for r in left)
+    if options["json"]:
+        _core.print_json({"removed": gone, "exclusion": row})
+    else:
+        print(f"{label} '{row['value']}' is {'no longer excluded' if gone else 'still excluded'}.")
+    return 0 if gone else 1
+
+
+def _folders_cmd(words, options):
+    if words and words[0].lower() in SWITCHES["folders"].words:
+        return _set_switch(SWITCHES["folders"], words[0], options)
+    if words:
+        return _folders_change(words, options)
+    reading = _read(["status", "prefs", "folders"])
+    state = SWITCHES["folders"].state(reading.row("status"), reading.row("prefs"))
+    row = reading.row("folders")
+    protected = _list(row.get("ControlledFolderAccessProtectedFolders"))
+    allowed = _list(row.get("ControlledFolderAccessAllowedApplications"))
+    if options["json"]:
+        _core.print_json({"state": state, "protected_folders": protected, "allowed_apps": allowed})
+        return 0
+    _net.render(f"controlled folder access: {state}", [
+        ("guarded", ["Documents, Pictures, Videos, Music, Desktop (always)"] + protected),
+        ("trusted apps you added", allowed or "none"),
+        ("change it with", [("def folders on|off|audit", "turn it on, off, or log without blocking"),
+                            ("def folders add <dir> | rm <dir>", "guard another folder"),
+                            ("def folders allow <app.exe> | disallow <app.exe>", "let one program through")]),
+    ])
+    return 0
+
+
+def _folders_change(words, options):
+    word = words[0].lower()
+    if len(words) < 2 or word not in ("add", "rm", "remove", "allow", "disallow"):
+        raise DefenderError("usage: def folders [on|off|audit | add <dir> | rm <dir> | allow <app.exe> | disallow <app.exe>]", 2)
+    target = " ".join(words[1:]).strip('"')
+    if word in ("add", "rm", "remove"):
+        parameter, adding, lowers = "ControlledFolderAccessProtectedFolders", word == "add", word != "add"
+        if adding and not os.path.isdir(target):
+            raise DefenderError(f"'{target}' is not a folder that exists", 2)
+    else:
+        parameter, adding, lowers = "ControlledFolderAccessAllowedApplications", word == "allow", word == "allow"
+        if adding and not (target.lower().endswith(".exe") and os.path.isfile(target)):
+            raise DefenderError(f"'{target}' is not a program (.exe) that exists", 2)
+    _net.need_admin()
+    if lowers and not _core.confirm(
+            f"{'Let ' + target + ' change files in the guarded folders' if adding else 'Stop guarding ' + target}? "
+            "That weakens ransomware protection for it. To undo: "
+            f"'def folders {'disallow' if adding else 'add'} {target}'. [y/N]: ", options["yes"]):
+        print("cancelled")
+        return 0
+    verb = "Add" if adding else "Remove"
+    _win.powershell(f"{verb}-MpPreference -{parameter} $env:W11_VALUE", env={"W11_VALUE": target})
+    row = _read(["folders"]).row("folders")
+    present = target.lower() in [item.lower() for item in _list(row.get(parameter))]
+    ok = present == adding
+    if options["json"]:
+        _core.print_json({"target": target, "listed": present, "ok": ok})
+    else:
+        print(f"{target} is {'now' if ok else 'still not'} {'listed' if adding else 'removed from the list'}."
+              if adding == ok else f"{target} is still listed.")
+    return 0 if ok else 1
+
+
+def _asr_rows(reading):
+    """The documented rules (in Microsoft's order, numbered from 1), plus any other rule configured on this PC."""
+    row = reading.row("asr")
+    ids = [item.lower() for item in _list(row.get("AttackSurfaceReductionRules_Ids"))]
+    actions = row.get("AttackSurfaceReductionRules_Actions")
+    actions = actions if isinstance(actions, list) else ([] if actions is None else [actions])
+    configured = dict(zip(ids, actions))
+    rows = [{"guid": guid, "name": name, "mode": ASR_MODES.get(configured.get(guid), "not set")} for guid, name in ASR_RULES]
+    known = {guid for guid, _ in ASR_RULES}
+    rows += [{"guid": guid, "name": "(a rule this page does not know)", "mode": ASR_MODES.get(act, str(act))}
+             for guid, act in configured.items() if guid not in known]
+    for number, item in enumerate(rows, start=1):
+        item["id"] = number
+    return rows
+
+
+def _asr_cmd(words, options):
+    if words and (len(words) != 2 or not words[0].isdigit() or words[1].lower() not in (*ASR_WORDS, "unset")):
+        raise DefenderError("usage: def asr [<n> block|audit|warn|off|unset]", 2)
+    if words:
+        _net.need_admin()
+    reading = _read(["asr"])
+    rows = _asr_rows(reading)
+    if words:
+        return _asr_change(rows, int(words[0]), words[1].lower(), options)
+    if options["json"]:
+        _core.print_json({"rules": rows})
+        return 0
+    print(f"{'ID':<5}{'MODE':<10}RULE")
+    for row in rows:
+        color = {"block": _net.GREEN, "audit": _net.CYAN, "warn": _net.CYAN}.get(row["mode"], _net.GREY)
+        print(color + f"{row['id']:<5}{row['mode']:<10}{row['name']}" + _net.RESET)
+    print("\nChange one: def asr <id> block|audit|warn|off|unset. Try audit first: it logs what block would stop.")
+    return 0
+
+
+def _asr_change(rows, number, word, options):
+    row = next((r for r in rows if r["id"] == number), None)
+    if row is None:
+        raise DefenderError(f"no rule with id {number}. Run 'def asr' to see them.", 2)
+    if word in ("off", "unset", "block", "on") and not _core.confirm(
+            f"Set '{row['name']}' to {word}? "
+            + ("Defender stops guarding against this. " if word in ("off", "unset") else
+               "Block mode can stop programs you use from working; audit mode only logs. ")
+            + f"To undo: 'def asr {number} {row['mode'] if row['mode'] != 'not set' else 'unset'}'. [y/N]: ", options["yes"]):
+        print("cancelled")
+        return 0
+    env = {"W11_GUID": row["guid"]}
+    if word == "unset":
+        _win.powershell("Remove-MpPreference -AttackSurfaceReductionRules_Ids $env:W11_GUID", env=env)
+    else:
+        _win.powershell("Add-MpPreference -AttackSurfaceReductionRules_Ids $env:W11_GUID "
+                        f"-AttackSurfaceReductionRules_Actions {ASR_WORDS[word]}", env=env)
+    now = next((r for r in _asr_rows(_read(["asr"])) if r["guid"] == row["guid"]), row)
+    wanted = "not set" if word == "unset" else ("block" if word == "on" else word)
+    if options["json"]:
+        _core.print_json({"rule": now, "requested": wanted, "changed": now["mode"] == wanted})
+    else:
+        print(f"'{now['name']}' is now {now['mode']}.")
+    return 0 if now["mode"] == wanted else 1
+
+
+# ======================================================================
+# SCHEDULE AND CPU
+# ======================================================================
+def _schedule_cmd(words, options):
+    if not words:
+        schedule = _schedule(_read(["prefs"]).row("prefs"))
+        if options["json"]:
+            _core.print_json(schedule)
+            return 0
+        print(f"scheduled scan: {schedule['day'] or 'not set'} at {(schedule['time'] or '?')[:5]}, "
+              f"{schedule['type'] or 'scan'}")
+        print("change it: def schedule day sun|mon|...|every|never time 02:00 type quick|full")
+        print("The PC has to be on at that time (Windows catches a missed scan up later).")
+        return 0
+    changes, i = {}, 0
+    while i < len(words):
+        key, value = words[i].lower(), words[i + 1].lower() if i + 1 < len(words) else None
+        if key == "day" and value in DAY_WORDS:
+            changes["ScanScheduleDay"] = DAY_WORDS[value]
+        elif key == "time" and value and re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", value):
+            changes["ScanScheduleTime"] = "'" + value.zfill(5) + ":00'"
+        elif key == "type" and value in SCAN_TYPES:
+            changes["ScanParameters"] = SCAN_TYPES[value]
+        else:
+            raise DefenderError("usage: def schedule [day sun..sat|every|never] [time HH:MM] [type quick|full]", 2)
+        i += 2
+    _net.need_admin()
+    if changes.get("ScanScheduleDay") == 8 and not _core.confirm(
+            "Stop the scheduled scan? Defender will only scan when you ask. To undo: 'def schedule day every'. [y/N]: ",
+            options["yes"]):
+        print("cancelled")
+        return 0
+    _win.powershell("Set-MpPreference " + " ".join(f"-{name} {value}" for name, value in changes.items()))
+    schedule = _schedule(_read(["prefs"]).row("prefs"))
+    if options["json"]:
+        _core.print_json(schedule)
+    else:
+        print(f"scheduled scan is now: {schedule['day'] or 'not set'} at {(schedule['time'] or '?')[:5]}, "
+              f"{schedule['type'] or 'scan'}.")
+    return 0
+
+
+def _cpu_cmd(words, options):
+    if len(words) > 1 or (words and not (words[0].isdigit() and (int(words[0]) == 0 or 5 <= int(words[0]) <= 100))):
+        raise DefenderError("usage: def cpu [0|5-100]   (0 means no limit)", 2)
+    if words:
+        _net.need_admin()
+        _win.powershell(f"Set-MpPreference -ScanAvgCPULoadFactor {int(words[0])}")
+    value = _read(["prefs"]).row("prefs").get("ScanAvgCPULoadFactor")
+    if options["json"]:
+        _core.print_json({"percent": value})
+    else:
+        print(f"a scan may use about {value}% of the CPU on average" if value else "scans have no CPU limit")
+        if not words:
+            print("change it: def cpu <5-100>, or def cpu 0 for no limit. It is a target, and scans that run while "
+                  "the PC is idle ignore it.")
+    return 0
+
+
+# ======================================================================
+# READ-ONLY VIEWS — SmartScreen, device security, offline scan, and opening the Security app
+# ======================================================================
+def _sac_word(registry_value, text):
+    if text:
+        return str(text).lower()
+    return {0: "off", 1: "on", 2: "evaluation"}.get(registry_value, "not available")
+
+
+def _smartscreen_cmd(options):
+    apps = _net.reg_read(EXPLORER_KEY, "SmartScreenEnabled")
+    enable = _net.reg_read(SMARTSCREEN_POLICY_KEY, "EnableSmartScreen")
+    level = _net.reg_read(SMARTSCREEN_POLICY_KEY, "ShellSmartScreenLevel")
+    edge = _net.reg_read(EDGE_POLICY_KEY, "SmartScreenEnabled")
+    store = _net.reg_read(APPHOST_KEY, "EnableWebContentEvaluation", hive=_win.HKCU)
+    sac_value = _net.reg_read(SAC_KEY, "VerifiedAndReputablePolicyState")
+    reading = _read(["status", "prefs"])
+    pua = SWITCHES["pua"].state(reading.row("status"), reading.row("prefs"))
+    data = {
+        "apps_and_files": str(apps).lower() if apps else "not set",
+        "apps_and_files_policy": {"enabled": enable, "level": str(level).lower() if level else None},
+        "edge_policy": edge, "store_apps": {1: "on", 0: "off"}.get(store, "not set"), "unwanted_apps": pua,
+        "smart_app_control": _sac_word(sac_value, reading.row("status").get("SmartAppControlState")),
+    }
+    if options["json"]:
+        _core.print_json(data)
+        return 0
+    policy_note = "set by policy" if enable is not None else "your setting"
+    _net.render("SmartScreen and Smart App Control (read only)", [
+        ("reputation-based protection", [
+            ("check apps and files", f"{data['apps_and_files']} ({policy_note})"),
+            ("Microsoft Edge", "set by policy: " + ("on" if edge else "off") if edge is not None else "set inside Edge"),
+            ("Microsoft Store apps", data["store_apps"]), ("unwanted apps", pua)]),
+        ("smart app control", [("state", data["smart_app_control"]),
+                               ("note", "Windows 11 only: allows apps with a good reputation or a trusted signature")]),
+        ("change it", [("def open browser", "opens App & browser control in the Windows Security app")]),
+    ])
+    return 0
+
+
+def _device_cmd(options):
+    reading = _read(["deviceguard"] + (["tpm"] if _core.is_admin() else []))
+    guard = reading.row("deviceguard")
+    running = [int(x) for x in _list(guard.get("Running")) if str(x).isdigit()]
+    secure = _net.reg_read(SECURE_BOOT_KEY, "UEFISecureBootEnabled")
+    hvci_key = _net.reg_read(HVCI_KEY, "Enabled")
+    tpm = reading.row("tpm") if _core.is_admin() else None
+    data = {
+        "memory_integrity": "on" if 2 in running else ("off" if guard else "unknown"),
+        "memory_integrity_setting": hvci_key,
+        "virtualisation_based_security": {0: "off", 1: "enabled, not running", 2: "running"}.get(
+            guard.get("VirtualizationBasedSecurityStatus"), "unknown"),
+        "credential_guard": "running" if 1 in running else "not running",
+        "secure_boot": "on" if secure == 1 else ("off" if secure == 0 else "not available (not a UEFI PC?)"),
+        "tpm": (("present" if tpm.get("TpmPresent") else "not found") + (", ready" if tpm.get("TpmReady") else ""))
+        if tpm else "needs administrator rights",
+    }
+    if options["json"]:
+        _core.print_json(data)
+        return 0
+    _net.render("device security (read only)", [
+        ("core isolation", [("memory integrity", data["memory_integrity"]),
+                            ("virtualisation-based security", data["virtualisation_based_security"]),
+                            ("credential guard", data["credential_guard"])]),
+        ("hardware", [("secure boot", data["secure_boot"]), ("TPM", data["tpm"])]),
+        ("change it", [("def open device", "turn memory integrity on in the Windows Security app"),
+                       ("hw firmware", "Secure Boot and the TPM in detail (needs administrator for the TPM)")]),
+    ])
+    return 0
+
+
+def _offline_cmd(options):
+    _net.need_admin()
+    if not _core.confirm("Run a Microsoft Defender Offline scan? Windows RESTARTS THIS PC immediately, with no chance to "
+                         "cancel, and scans before Windows starts. Unsaved work is lost. It needs Windows Defender to be "
+                         "the active antivirus and the Windows Recovery Environment to be on. [y/N]: ", options["yes"]):
+        print("cancelled")
+        return 0
+    if not _core.confirm("Are you sure? Save and close everything first. Restart and scan now? [y/N]: ", options["yes"]):
+        print("cancelled")
+        return 0
+    print("starting the offline scan: the PC restarts now...")
+    _win.powershell("Start-MpWDOScan", timeout=120)
+    return 0
+
+
+def _open_page(target, options):
+    if target not in OPEN_TARGETS:
+        raise DefenderError("usage: def open [" + "|".join(OPEN_TARGETS) + "]", 2)
+    uri, label = OPEN_TARGETS[target]
+    try:
+        _win.open_settings(uri)
+        used = uri
+    except _net.NetError:
+        _win.open_settings(SETTINGS_FALLBACK)
+        used = SETTINGS_FALLBACK
+    if options["json"]:
+        _core.print_json({"opened": used, "page": label})
+    else:
+        print(f"opened {label}." + (" (the Security app's own link did not open, so this is the Settings page)"
+                                     if used == SETTINGS_FALLBACK else ""))
+    return 0
+
+
+# ======================================================================
+# COMMAND — app.py calls run(args) with everything after "defender"/"def"/"av"/"wd"
+# ======================================================================
+def run(args):
+    os.system("")  # enables ANSI colour codes in the Windows console
+    args, options = _core.split_flags(args)
+    wait = any(arg.lower() == "--wait" for arg in args)
+    args = [arg for arg in args if arg.lower() != "--wait"]
+    if not args:
+        args = ["status"]
+    elif args[0].lower() in _core.HELP_WORDS:
+        print(f"usage: {USAGE}")
+        return 0
+    word, rest = args[0].lower(), args[1:]
+    try:
+        if word == "status" and not rest:
+            return _status_cmd(options)
+        if word == "why" and not rest:
+            return _why_cmd(options)
+        if word == "scan":
+            return _scan_cmd(rest, options, wait)
+        if word == "scans":
+            return _scans_cmd(rest, options)
+        if word in ("update", "signatures") and not rest:
+            return _update_cmd(options)
+        if word == "threats":
+            return _threats_cmd(rest, options)
+        if word in ("quarantine", "q"):
+            return _quarantine_cmd(rest, options)
+        if word == "clean" and not rest:
+            return _clean_cmd(options)
+        if word in ("on", "off"):
+            return _on_off_cmd(rest, word == "on", options)
+        if word == "folders":
+            return _folders_cmd(rest, options)
+        if word in SWITCHES:
+            return _switch_cmd(word, rest, options)
+        if word == "tamper" and not rest:
+            return _tamper_cmd(options)
+        if word in ("exclusions", "exclusion", "exclude"):
+            return _exclusions_cmd(rest, options)
+        if word == "schedule":
+            return _schedule_cmd(rest, options)
+        if word == "cpu":
+            return _cpu_cmd(rest, options)
+        if word == "asr":
+            return _asr_cmd(rest, options)
+        if word == "smartscreen" and not rest:
+            return _smartscreen_cmd(options)
+        if word == "device" and not rest:
+            return _device_cmd(options)
+        if word == "events":
+            return _events_cmd(rest, options)
+        if word == "offline" and not rest:
+            return _offline_cmd(options)
+        if word == "open" and len(rest) <= 1:
+            return _open_page(rest[0].lower() if rest else "app", options)
+        raise DefenderError(f"usage: {USAGE}", 2)
+    except (DefenderError, _net.NetError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return e.code
+
+
+if __name__ == "__main__":
+    sys.exit(run(sys.argv[1:]))

@@ -39,7 +39,7 @@ import os
 import re
 import sys
 import time
-from ctypes import (POINTER, Structure, Union, byref, c_int16, c_int32, c_ssize_t, c_uint8, c_uint16, c_uint32, c_uint64,
+from ctypes import (POINTER, Structure, Union, byref, c_int16, c_int32, c_ssize_t, c_uint16, c_uint32, c_uint64,
                     c_void_p, c_wchar_p)
 
 import _core
@@ -1094,33 +1094,36 @@ def _open_settings(uri, options, text):
 def _has_console():
     """Whether there is a console to wait for a key in (the timed question needs one)."""
     try:
-        import msvcrt  # noqa: F401
-        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+        import msvcrt
+        return bool(msvcrt and sys.stdin.isatty() and sys.stdout.isatty())
     except (ImportError, AttributeError, ValueError):
         return False
 
 
-def _keep_prompt(seconds=KEEP_SECONDS):
-    """Wait up to `seconds` for a key. Returns "yes" for y, "no" for any other key, "timeout" when none was pressed."""
+def _keep_prompt(options, seconds=KEEP_SECONDS):
+    """Wait up to `seconds` for a key. Returns "yes" for y, "no" for any other key, "timeout" when none was pressed.
+    With --json the question and the countdown go to stderr, so stdout stays JSON."""
     import msvcrt
-    print(f"Keep this? Press y to keep it. Any other key, or waiting {seconds} seconds, puts the old setting back.")
+    out = sys.stderr if options["json"] else sys.stdout
+    print(f"Keep this? Press y to keep it. Any other key, or waiting {seconds} seconds, puts the old setting back.",
+          file=out)
     deadline = time.monotonic() + seconds
     shown = None
     while True:
         left = deadline - time.monotonic()
         if left <= 0:
-            print()
+            print(file=out)
             return "timeout"
         remaining = int(left) + 1
         if remaining != shown:
-            print(f"\r  going back in {remaining:>2} s ... ", end="", flush=True)
+            print(f"\r  going back in {remaining:>2} s ... ", end="", flush=True, file=out)
             shown = remaining
         if msvcrt.kbhit():
             key = msvcrt.getwch()
             if key in ("\x00", "\xe0"):  # the first half of an arrow or function key
                 msvcrt.getwch()
                 continue
-            print()
+            print(file=out)
             return "yes" if key.lower() == "y" else "no"
         time.sleep(0.1)
 
@@ -1177,7 +1180,7 @@ def _apply_mode(row, wanted, options):
         _check(_change(device, new, 0), f"Windows would not change {label}")
         answer = "no"
         try:
-            answer = _keep_prompt()
+            answer = _keep_prompt(options)
         finally:
             if answer != "yes":
                 if _change(device, old, 0) != 0:  # the old mode must come back, whatever happened
@@ -1339,7 +1342,7 @@ def _arrange(displays, positions, new_primary, options, what):
         _stage(new_plan, prime["device"])
         answer = "no"
         try:
-            answer = _keep_prompt()
+            answer = _keep_prompt(options)
         finally:
             if answer != "yes":
                 try:

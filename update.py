@@ -990,7 +990,7 @@ def _show(word, options):
             ("kind", _kind_text(update)), ("KB", update["kb"]), ("severity", update["severity"]),
             ("download size", _size(update["size"])),
             ("restart", {"never": "not needed", "always": "always needed", "maybe": "may be needed"}[update["restart"]]),
-            ("downloaded already", update["downloaded"]),
+            ("downloaded already", "yes" if update["downloaded"] else "no"),
             ("licence terms", "accepted" if update["licence_accepted"] else "not accepted yet; installing accepts them"),
             ("categories", update["categories"]),
         ]),
