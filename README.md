@@ -30,11 +30,18 @@ py app.py
 | device | `dvc` | Devices and drivers, as in Device Manager: status, errors, tree, search, and turning a device on, off or restarting it |
 | firewall | `fw` | Windows Firewall: turn a network profile on or off, list the rules, and turn one rule on or off |
 | events | `evt` | Windows event logs: errors, crashes, shutdowns, boots, timelines, export and watch |
-| netmon | `net`, `nm`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
+| netmon | `net`, `nm`, `traffic` | Live network monitor: connections, programs and domains, bytes per program, traffic per adapter, kill and block |
+| defender | `def`, `av`, `wd` | Windows Defender: status, scans, threats, protection switches, exclusions, schedule, SmartScreen and device security |
+| privacy | `priv`, `perm`, `permissions` | App permissions: which apps can use the camera, microphone, location and more, what is using them now, and the general privacy settings |
+| display | `dsp`, `res`, `resolution` | Resolution, refresh rate, rotation, HDR, arrangement and scale of each screen |
+| bluetooth | `bt` | Bluetooth: turn it on or off, list, scan, pair and remove devices, and find out why it is not working |
+| sound | `snd`, `audio` | Sound devices: choose the default speakers and microphone, device volume and mute, level meters, and why there is no sound |
+| environment | `env`, `vars` | Environment variables and PATH: set, delete, edit the PATH, with a backup before every change and undo |
+| update | `wu`, `winupdate`, `updates` | Windows Update: pending updates, history, install, hide, uninstall, pause, and why updates are stuck |
 
 Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 
-Run `py app.py` for an interactive console, or pass a command directly, e.g. `py app.py bn 40`. Type `settings` to see every setting, numbered, with what it does. Type a setting's name on its own, such as `vm` or `wifi`, to see a short blue list of what it can do. Use `help` to list everything.
+Run `py app.py` for an interactive console, or pass a command directly, e.g. `py app.py bn 40`. Type `settings` to see every setting, numbered, with what it does. Type a setting's name on its own, such as `vm` or `wifi`, to see a short blue list of what it can do. Use `help` to list everything. `settings search night light` finds the setting and command for something you want to do, and `settings --json` lists every setting and command as data.
 
 ### Brightness
 
@@ -175,7 +182,11 @@ The hotspot uses Windows' tethering API, the one Settings uses, so it needs no a
 
 ### For scripts and AI agents
 
-Add `--json` to a reading command (`wifi info`, `wifi known`, `wifi ip`, `eth info`, `hs status`, `lc why` and others) for machine-readable output. Add `--yes` to answer a confirmation in advance, and only after the person has agreed to that change. Without `--yes` and with no one to answer, a confirmation counts as no. Exit codes are 0 for success, 1 for a system error (including "needs administrator") and 2 for bad usage.
+Start with `settings --json`: every setting, its short forms and every command with what it does, as data (`settings dsp --json` gives one). `settings search <words>` finds the command for a task, and `--json` works there too.
+
+Add `--json` to a reading command (`wifi info`, `wifi known`, `eth info`, `hs status`, `lc why`, `fw`, `dvc ls`, `net`, `def`, `priv`, `dsp`, `bt ls`, `snd`, `env ls`, `wu` and others) for machine-readable output with the same keys every time: no colour and no prose, and the questions and progress lines go to stderr. Add `--yes` to answer a confirmation in advance, and only after the person has agreed to that change. Without `--yes` and with no one to answer, a confirmation counts as no. A few questions are never answered by `--yes` because a person has to decide them: pairing with a code to compare (`bt pair`, which takes `--code` instead), deleting a protected variable (`env rm Path`), and the Event Viewer log clear. Exit codes are 0 for success, 1 for a system error (including "needs administrator") and 2 for bad usage.
+
+Pages whose bare name is a status (`fw`, `net`, `lc`, `def`, `priv`, `dsp`, `bt`, `snd`, `wu`) run it when typed alone, and `<name> help` shows the intro. Every change reads the setting back and reports what Windows says now.
 
 ### Location
 
@@ -301,15 +312,22 @@ dvc search VID_1E71             find by name, class, hardware ID, vendor or driv
 dvc usb | displays | audio | storage
 dvc report                      the whole inventory as JSON, for scripts and agents
 dvc 12 enable                   turn device 12 on (administrator)
-dvc 12 disable                 turn it off (administrator; asks first, twice for keyboards, mice, network and screens)
-dvc 12 restart                 restart it (administrator; asks first)
-dvc driver add new.inf         install a driver package, which is how a driver is updated (administrator; asks first)
-dvc driver rm 12               remove device 12's driver package (administrator; asks first)
+dvc 12 disable                  turn it off (administrator; asks first, twice for keyboards, mice, network and screens)
+dvc 12 restart                  restart it (administrator; asks first)
+dvc rescan                      scan for hardware changes and say what appeared (administrator)
+dvc rollback 12                 put back the driver device 12 had before its current one (administrator; asks first)
+dvc driver add new.inf          install a driver package, which is how a driver is updated (administrator; asks first)
+dvc driver rm 12                remove device 12's driver package (administrator; asks first)
+dvc drivers export D:/drivers   copy the drivers you installed into a folder; add an id for just that device's (administrator; asks first)
+dvc backup                      save an inventory of every device and driver as a JSON snapshot
+dvc backup ls | rm 2            list the saved snapshots, or delete one (asks first)
+dvc diff                        what changed since the newest snapshot: new and missing devices, state, drivers, problems
+dvc diff 2 | dvc diff old.json  compare with an older snapshot or a file
 ```
 
 Reading needs no administrator rights. "Disabled" means turned off in Device Manager, and "not connected" means the device is known to Windows but is not plugged in or present right now.
 
-The changes use `pnputil`, the Windows tool that Device Manager's own commands use. Each change checks for administrator rights before it asks anything, reads the device back afterwards, and says what Windows reports now. `dvc driver rm` only removes packages you installed (`oem` packages); the ones that came with Windows are refused. Removing a driver can stop the device working until another driver is installed, so the question says so. A driver update here means installing a newer `.inf`; there is no "update driver" for a device that finds one on its own.
+The changes use `pnputil`, the tool Device Manager's own commands use (the rollback uses Windows' driver-installation API). Each change checks for administrator rights before it asks, reads the device back, and says what Windows reports now. When a change worked but needs a restart, the page says so. `driver rm` and `drivers export` only touch packages you installed (`oem`); ones that came with Windows are refused. Removing a driver can stop the device working until another driver is installed, so the question says so. A driver update here means installing a newer `.inf`; Windows Update's own driver updates are `wu ls` and `wu install drivers`. `dvc backup` saves a JSON snapshot to `%LOCALAPPDATA%\w11-cli-console\device-snapshots`, outside this folder, with no administrator rights. `dvc diff` lists new devices, devices Windows no longer lists, state changes (an unplugged device is 'no longer connected', not 'removed'), driver changes and problems that appeared or went away. `dvc rollback` only works when Windows kept the previous driver. In the console, type folder paths with forward slashes (`D:/drivers`), because the console eats backslashes.
 
 ### Firewall
 
@@ -371,6 +389,9 @@ net ls --state listen --loopback --process svchost.exe --ip 192.168.1.50 --proto
 net 12                     one connection in full: its program, why it exists, what you can do
 net procs                  traffic by program: connections, peers, domains, and what each one is
 net iface                  Wi-Fi and Ethernet: speed, bytes since Windows started, rate now
+net bytes [seconds]        bytes per program and address, measured for 10 s with a Windows trace session (administrator)
+net bytes last | clear     show the last measurement, or delete it
+net ls --bytes             add the measured bytes to the connection list
 net history [days]         totals and busiest programs from earlier net live sessions
 net history clear          delete the saved samples (asks first)
 net kill 12                end the program that owns connection 12 (asks first; Windows parts refused)
@@ -384,13 +405,164 @@ net unblock 203.0.113.9    remove them
 
 What it can and cannot tell you:
 
-- **Bytes** are counted per adapter (`net iface`, and `net history`). Windows does not give ordinary users byte counts per connection or per program, so `net procs` shows connections and peers instead.
+- **Bytes** per adapter need no administrator rights (`net iface`, `net history`). Per program, address and protocol they come from `net bytes`, a measurement window of 10 s by default. It runs a Windows trace session with logman and always stops it. Counts are payload only, TCP and UDP, loopback excluded unless `--loopback`. `net procs` and `net <id>` show the last result for an hour. If a run is killed hard, `logman stop w11-cli-console-net -ets` stops the session.
 - **Domains** come from the names Windows looked up recently (its DNS cache), then from a reverse lookup of the address. Some addresses have no name.
 - **"Open for"** is the time since `net` first saw a connection. It is not the time since the connection began, which Windows does not report.
 - **Why it exists** is a best guess from the port, the program and the address. It says "usually" and "likely" because a program can use any port.
 - **Blocks** are Windows Firewall rules named `w11-cli-console-block-<ip>-out` and `-in`. `net unblock` removes them.
 
 Samples are saved to `%LOCALAPPDATA%\w11-cli-console\net-history.jsonl` once a minute while `net live` runs, and kept for 30 days. The first-seen times are in `net-seen.json` in the same folder.
+
+### Windows Defender
+
+```
+def                        is Defender protecting this PC, and what needs attention
+def why                    what is wrong, and the command that fixes each thing
+def scan | scan full | scan C:\Downloads   start a scan in the background (--wait stays until done)
+def scan status | stop     is a scan running; end it
+def update                 get the newest virus signatures
+def threats | threats 2    what Defender found; one detection in full
+def quarantine | clean     threats still active; remove every active threat (asks)
+def off realtime           turn a protection off (asks); def on realtime turns it on
+def cloud advanced | samples never | pua audit | network on | folders on
+def exclusions add path D:\Work | rm 1
+def schedule day sun time 02:00 type full
+def asr 3 audit | smartscreen | device | tamper | events 7 protection
+def open settings          open the Windows Security app
+```
+
+Reading needs no administrator rights, except the exclusion list and the TPM. Every change needs an administrator terminal, and the page checks that before it asks anything. Turning protection off, adding an exclusion and `def clean` ask first. Tamper Protection can only be changed in the Windows Security app, and the page tells you when it is the reason a change was refused. A policy from an organisation is also reported, not overridden. `def clean` removes all active threats at once. Restoring from quarantine is done in the Security app. `def offline` restarts the PC immediately.
+
+### Privacy
+
+```
+priv                          every permission: who may use it, and what is using it right now
+priv now                      what is using your camera, microphone, location or screen this second
+priv recent [days] [all]      sensitive permissions apps used lately (7 days by default)
+priv sensitive                camera, microphone, location, screen capture: who can use each
+priv camera                   one permission: its switches, and every app that has asked, numbered
+priv camera off | on          block, or allow, all your apps for the camera
+priv camera 3 off             block one app (ids come from 'priv camera'; a name works too)
+priv camera desktop on|off    "Let desktop apps access your camera"
+priv camera device on|off     the switch for every user of this PC (administrator; asks first)
+priv why camera [3]           why apps (or app 3) cannot use it, and the command that fixes it
+priv app zoom                 everything one app can access
+priv app zoom off             block that app from everything (asks first)
+priv general                  advertising ID, tailored experiences, language list, app launch tracking,
+                              diagnostic data, activity history
+priv general ads off          turn one of them off
+priv general diagnostics required | default    (administrator; sets a Windows policy)
+priv open camera              open that page in Settings
+```
+
+Windows keeps a chain of switches for each permission, and the first one that says no wins. The order is: an organisation policy, the switch for this PC, your switch for all apps, the switch for desktop programs, then the app itself. Your switches and the app switches need no administrator rights; only `device` does, and the page checks that before it asks. Turning a permission off asks nothing. Turning one on asks first, as does allowing a sensitive app.
+
+Where a policy owns a switch, the page refuses and says why. It never works around a policy. `diagnostics` and `activity` can only be changed through a Windows policy, which Settings then shows as managed. The page says so before it asks, and `default` removes the policy value again. Windows records when each app last started and stopped using a permission. An app that started and has not stopped is "in use". A desktop program marked in use that is not running is listed as not counted, because it stopped without Windows noticing. Windows keeps only the latest use per app, not a full history. Location is read here and changed with `lc`.
+
+### Display
+
+```
+dsp                       each display: resolution, refresh rate, scale, HDR, position, what could be better
+dsp 1                     one display in full
+dsp 1 modes               supported resolutions and refresh rates (--all adds unusual modes)
+dsp 1 res 1920x1080       change the resolution (1080p, 1440p, 4k work; 1920x1080@144 sets the rate too)
+dsp 1 hz 144              change the refresh rate
+dsp 1 rotate portrait     0, 90, 180, 270 (landscape, portrait, flipped)
+dsp 2 right-of 1          place a display (left-of, above, below), or dsp 2 pos 2560 0
+dsp 2 primary             make display 2 the main display
+dsp layout                draw where the displays sit
+dsp 1 hdr on|off          HDR
+dsp project extend        Win+P: extend, duplicate, internal (PC screen only), external
+dsp scale                 each display's scale and the one Windows recommends
+dsp nightlight            opens Settings (no API for Night light)
+dsp brightness 40         the same as bn
+```
+
+Nothing needs administrator rights. Without an id the main display is used. A change is applied unsaved and goes back after 15 seconds unless you press `y`, as in Settings, so a bad mode cannot leave a black screen. `--yes` tests and saves at once. Scale and Night light have no documented API, so they open the right Settings page. Ids follow the Windows names, so they shift when a display is plugged in or out.
+
+### Bluetooth
+
+```
+bt                          the radio, and your paired devices
+bt on | off                 turn Bluetooth on or off
+bt ls                       paired devices: kind, connected or not, battery, address
+bt 3                        one device in full (an id, a name or an address works)
+bt scan [seconds] [--all]   look for nearby devices that are in pairing mode (10 s by default)
+bt pair 2                   pair with number 2 from the last scan (asks first)
+bt pair AA:BB:CC:DD:EE:FF --pin 0000    --pin gives a PIN; --code gives the number the device shows
+bt rm 3                     unpair device 3 (asks first)
+bt why                      Bluetooth is not working: what is wrong and what fixes it
+bt service [restart]        the Bluetooth Support Service (restart needs administrator)
+bt connect 3 | disconnect 3 shows the state and opens Settings
+bt send [file] | receive    Windows' Bluetooth File Transfer wizard
+bt more | open              the classic Bluetooth Settings dialog, or the Settings page
+```
+
+Nothing here needs administrator rights except restarting the service. Put the device in pairing mode before `bt scan` can see it. Ids are numbered by name and shift when devices come and go, so run `bt ls` first. `bt scan` numbers are for `bt pair` only. Turning Bluetooth off asks first when devices are connected, because a Bluetooth keyboard or mouse stops working. `--yes` never answers a "does the code match?" question, because a person has to compare the numbers; a person can read the number to an agent, which passes it with `--code`. Windows has no documented way for a program to connect or disconnect a device that is already paired, so `bt connect` and `bt disconnect` open Settings. Battery comes from a property many devices fill in and Microsoft does not document, so "-" means "the device does not say". Removing a device means pairing it again.
+
+### Sound
+
+```
+snd                          playback and recording devices, default ones marked
+snd 3                        one device: format, volume, level
+snd default 2                make device 2 the default (add "calls" for the calls device only)
+snd 3 volume 40              set a device's volume (snd 3 40 works too); mute | unmute | toggle
+snd out | snd in            the default speakers / microphone on one line; snd out volume 40
+snd level 10                 live level meter; "snd level listen" opens the microphone
+snd test                     play a short tone through the default output
+snd why                      no sound? the usual causes with fixes; snd why in for a silent microphone
+snd mono                     whether Mono audio is on (changing it opens Settings)
+snd startup off              turn the startup sound off as a policy (administrator)
+snd classic recording        the classic Sound dialog
+snd apps | snd disable 3 | snd open    pages of Settings, where Windows has no API
+```
+
+Nothing here needs administrator rights except `snd startup`. Ids are numbered playback first, then recording, so they shift: run `snd` first. A name works too. One app's volume is `vm`. Windows has no documented way to choose the default device. `snd default` uses an undocumented interface that SoundVolumeView and SoundSwitch also use. It reads the default back, and if Windows did not change it, it opens Settings > System > Sound. Mono audio, per-app output devices and turning a device on or off have no documented way either, so those open the right Settings page. A microphone level of 0% can mean no program is using the microphone. `snd level listen` opens it for the measurement, shows Windows' microphone indicator, records nothing, and asks first.
+
+### Environment variables
+
+```
+env ls                                        your variables and the PC's, numbered
+env ls system search java                     one scope, or search names and values
+env JAVA_HOME                                 one variable in full (env show Path for the variable called Path)
+env set JAVA_HOME "C:\Java\jdk-21"            set a variable for you (add --system for everyone; administrator)
+env rm JAVA_HOME                              delete it (asks first)
+env path                                      PATH entries in order; missing folders and duplicates flagged
+env path add "C:\Tools" --front               add a folder (--front searches it first)
+env path rm 3 | move 3 up | clean             remove, reorder, or drop empty/missing/duplicate entries
+env where Path | env find tools | env expand "%USERPROFILE%\bin"
+env backups | env diff | env undo             every change saves the whole scope first
+env export vars.json | env import vars.json
+```
+
+Reading needs no administrator rights; system changes do, checked before asking. A new program gets system variables then yours (yours win, except PATH, where yours come after the system's). Open terminals keep their old copy, so open a new one. In the console, put paths in quotes or the backslashes are lost. Every change saves a JSON backup of the whole scope first, and `env undo` run twice goes forward again. Names Windows relies on (Path, PATHEXT, ComSpec, windir and the like) need their name typed, and `--yes` does not answer for them. Import skips protected names.
+
+### Windows Update
+
+Type `wu` to see how updates are doing: the Windows version, when Windows last checked, whether a restart is waiting, whether updates are paused or managed by an organisation, and the services Windows Update runs on. It starts with a verdict and the command that fixes anything wrong.
+
+```
+wu                          status and verdict
+wu ls                       search for pending updates (up to a minute), numbered
+wu 3 | wu KB5031356         one update: size, severity, whether it needs a restart
+wu install 3                download and install update 3 (administrator; asks first)
+wu install all              every regular update (not drivers, optional or feature updates)
+wu install drivers          the driver updates Windows offers
+wu history 30 | wu failed   recent installs and their results | only the failures, with their codes explained
+wu installed                updates Windows lists as installed
+wu hide 3 | wu unhide 1 | wu hidden    keep an update from being offered, and bring it back (administrator)
+wu uninstall KB5031356      remove an installed update (administrator; asks first)
+wu pause 14 | wu resume     pause updates up to 35 days (administrator)
+wu options                  active hours, optional updates, restart notices, Delivery Optimization
+wu options microsoft on     updates for other Microsoft products (administrator)
+wu drivers off              leave drivers out of Windows Update (administrator; asks first)
+wu services | wu why        the services, and every reason updates might be stuck
+wu open options             open that Settings page (history, options, optional, restart, delivery)
+```
+
+Reading and searching need no administrator rights. Installing, uninstalling, hiding, pausing and the two options that change something need an administrator terminal, and the page checks that before it asks anything. Ids come from the last `wu ls`, and every action searches again and matches the update's own id, so a shifted id never installs the wrong update; a KB number always works. This page never restarts the PC: it says when a restart is needed.
+
+Pausing uses the documented Windows Update for Business policy (a start date, to which Windows adds 35 days), not the private values Settings keeps. Settings may therefore say "Some settings are managed by your organization" and may not show the date; `wu` does. Windows Home ignores that policy, so on Home `wu pause` opens Settings instead. `wu resume` removes exactly what `wu pause` wrote and never touches an organisation's policy. Uninstalling uses `wusa`; Windows no longer removes many updates silently, and then the page opens the update history in Settings. Times from the Windows Update Agent are read as UTC.
 
 ## Adding a setting
 
@@ -414,10 +586,11 @@ def run(args):             # args = words after the name
 - `app.py`: the console and command routing
 - `_core.py`: code shared by app.py and the pages (finding pages, drawing intros, --json and --yes)
 - `_net.py`: code shared by the wifi and ethernet pages (adapter details, IP, DNS, sharing, features, 802.1X)
+- `_win.py`: code shared by the newer pages (PowerShell, the registry, Settings links, small data files)
 - `intro.txt`: the banner shown when the console starts
 - `settings.py`: the `settings` list, which shows every setting
-- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`, `netmon.py`, `firewall.py`: settings
+- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`, `netmon.py`, `firewall.py`, `defender.py`, `privacy.py`, `display.py`, `bluetooth.py`, `sound.py`, `environment.py`, `update.py`: settings
 - `_probe.py`: code shared by hardware and system (one PowerShell call per group of readings, the processor API, power status, tables)
 - `fashion.txt`: the pattern every new page follows, and what each setting is for
 - `brightness.ahk`: the older AutoHotkey version of brightness
-- `requirements.txt`: Python packages (`pycaw`, `psutil`, `comtypes`, and the `winrt` packages the hotspot uses)
+- `requirements.txt`: Python packages (`pycaw`, `psutil`, `comtypes`, and the `winrt` packages the hotspot and Bluetooth pages use)

@@ -59,14 +59,19 @@ def _first_command(module):
 
 
 def _table(entries):
+    # column widths follow the longest entry, so a long name or summary never runs into the next column
+    name_w = max(len(module.NAME) for _, module in entries) + 2
+    short_w = max(len(module.ALIASES[0]) if module.ALIASES else 1 for _, module in entries) + 2
+    what_w = max(len(module.SUMMARY) for _, module in entries) + 2
     lines = [
         "every setting, and how to start with it",
         "",
-        f"  {'NO.':<5}{'SETTING':<13}{'SHORT':<8}{'WHAT IT DOES':<57}START WITH",
+        f"  {'NO.':<5}{'SETTING':<{name_w}}{'SHORT':<{short_w}}{'WHAT IT DOES':<{what_w}}START WITH",
     ]
     for number, module in entries:
         short = module.ALIASES[0] if module.ALIASES else "-"
-        lines.append(f"  {number:<5}{module.NAME:<13}{short:<8}{module.SUMMARY:<57}{_first_command(module)}")
+        lines.append(f"  {number:<5}{module.NAME:<{name_w}}{short:<{short_w}}{module.SUMMARY:<{what_w}}"
+                     f"{_first_command(module)}")
     lines += ["", "open one: settings 3, or settings vm. Any command works the same way: vm ls, bn 40, su ls."]
     return _core.BLUE + "\n".join(lines) + _core.RESET
 
@@ -164,6 +169,8 @@ def _search(words, entries, options):
     terms = [word.lower() for word in words]
     found = []
     for number, module in entries:
+        if module.NAME == NAME:  # this page's own help uses search words as examples
+            continue
         rows = _rows(module)
         scores = [_score(term, module, rows) for term in terms]
         if not all(scores):  # every word has to be found somewhere in the setting

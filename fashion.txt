@@ -38,9 +38,12 @@ _core.py         Shared by app.py and the pages (see SHARED CODE). Files startin
 _net.py          Shared network code for wifi and ethernet, and any future network page (VPN, proxy).
 _probe.py        Shared reading code for hardware and system: one PowerShell call per group of
                  readings (probe, sample), the processor API, power status, powercfg, and table/emit.
+_win.py          Shared plumbing for the newer pages: PowerShell (powershell, powershell_json), Settings links,
+                 registry reads and writes, small data files in %LOCALAPPDATA%, and ago().
 settings.py      The "settings" list. It reads every page itself, so never edit it to add one.
 volume.py, brightness.py, startup.py, apps.py, process.py, wifi.py, ethernet.py, hotspot.py,
-location.py, regedit.py, services.py, device.py, events.py, hardware.py, system.py, netmon.py, firewall.py
+location.py, regedit.py, services.py, device.py, events.py, hardware.py, system.py, netmon.py, firewall.py,
+defender.py, privacy.py, display.py, bluetooth.py, sound.py, environment.py, update.py
                  The pages.
 intro.txt        The banner the console prints when it starts.
 README.md        For users: the table of settings and a section per setting.
@@ -63,6 +66,15 @@ Which file to copy:
   actions that ask first (ending a process, a firewall block) .. netmon.py (psutil for connections
   and adapter counters; _net for adapters; process.py's protected-name rule)
 - read-only reports on hardware or live load (no changes, shared readings) .. hardware.py, system.py
+- a status page with a verdict, a "why" command that names the fix, and switches that refuse politely when a policy
+  or Tamper Protection owns them (PowerShell cmdlets, read back) .. defender.py, update.py
+- a registry tree of per-app switches with policy overrides and "in use now" .. privacy.py (after location.py)
+- ctypes against a Windows API with a change that undoes itself unless confirmed in time .. display.py
+- WinRT devices, discovery and pairing with prompts answered by hand .. bluetooth.py (after hotspot.py)
+- COM interfaces declared by hand with comtypes, including one undocumented call with a read-back .. sound.py
+- editing values with a backup before every change, and undo .. environment.py
+- measuring with a Windows trace session that is always stopped (logman + Get-WinEvent) .. netmon.py (net bytes)
+- files kept in %LOCALAPPDATA%\w11-cli-console (snapshots, backups, caches) .. _win.data_dir; device.py (backup), environment.py
 - read-only views of a Windows service: sc queryex, registry for config .. services.py (the read-only section)
 
 LESSONS FROM hardware.py AND system.py
@@ -133,8 +145,11 @@ with an empty syntax, such as ("", "known networks"), is a heading. The five or 
 still come first, before any heading, so the intro reads like a small page until you look further.
 
 RUN_ALONE = True means typing the name alone runs the page instead of showing the intro. settings,
-location and regedit set it, because the name alone is a useful command and changes nothing. Never
-set it on a page where the name alone would change something.
+location, regedit, firewall, netmon, defender, privacy, display, bluetooth, sound and update set it, because the
+name alone is a useful command (a status) and changes nothing; "<name> help" still shows the intro, and the status
+ends with a line saying so. Never set it on a page where the name alone would change something.
+Pages may also set KEYWORDS = [...] (words people use that the name and intro do not contain): "settings search"
+reads them.
 
 3. One entry point. run(args) gets the words after the name and returns an exit code:
 
@@ -400,6 +415,72 @@ Event logs (Get-WinEvent, through PowerShell)
   the clear is not run if the backup fails.
 - The baseline file lives in %LOCALAPPDATA%\w11-cli-console, not in the project folder.
 
+Windows lessons from the pages written without Windows (from documentation and community sources; none confirmed on a PC yet,
+so each is also in OPEN ISSUES under "check")
+
+Devices and drivers (device.py)
+- pnputil exit codes: 0 success; 3010 worked, a restart finishes it; 1641 restart started; 259 no matching device or already a better
+  driver. /export-driver <oem#.inf | *> <folder> exports third-party packages only (Windows 10 1607 and later).
+- pnputil prints a banner first, so the page drops it from error text. /enum-drivers labels change with the language, so blocks are
+  read by position and the published name by its shape (oem<number>.inf).
+- _net.run_tool only says whether the exit code was 0. device.py reads the real code by watching subprocess.run (_exit_codes).
+
+Network bytes (netmon.py, net bytes)
+- Provider Microsoft-Windows-Kernel-Network {7dd42a49-5329-4832-8dfd-43d979153a88}. Data events 10/11 (TCP send/receive IPv4) and 42/43
+  (UDP) confirmed; 26/27 and 58/59 (IPv6) from memory, so the page checks every id against Get-WinEvent -ListProvider.
+- logman start/stop with -ets; Get-WinEvent -Path needs -Oldest for .etl files. The data events carry PID, size, daddr, saddr, dport, sport.
+
+Defender (defender.py)
+- Start-MpScan -ScanType takes QuickScan, FullScan or CustomScan. Remove-MpThreat takes no threat id (it removes every active threat).
+- Tamper Protection locks real-time, behaviour, cloud, download and signature settings, including from PowerShell, and a Set-MpPreference
+  can "succeed" without changing anything: always read back. MpCmdRun has -Scan -Cancel.
+- Memory integrity is HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity\Enabled (read only here).
+- Defender events: 5001 real-time protection off. Start-MpWDOScan needs a local administrator, Defender as the active antivirus and WinRE on,
+  and restarts at once.
+
+Privacy (privacy.py)
+- ConsentStore (HKCU and HKLM) holds Value Allow/Deny per permission; the desktop-apps switch is NonPackaged\Value. Policy lives at
+  HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy (LetAppsAccess<Name> 0 user, 1 force allow, 2 force deny, plus _ForceAllowTheseApps,
+  _ForceDenyTheseApps, _UserInControlOfTheseApps); precedence deny, allow, user. LastUsedTimeStop == 0 is read as "in use now".
+- Per-user values: AdvertisingInfo\Enabled, Privacy\TailoredExperiencesWithDiagnosticDataEnabled, International\User Profile\HttpAcceptLanguageOptOut
+  (1 = opt out), Explorer\Advanced\Start_TrackProgs. Policies: AllowTelemetry (1 = required only), the three System activity-history values.
+
+Display (display.py)
+- A process that is not DPI aware is told 96 DPI; the page asks for per-monitor awareness when a command runs, never at import.
+- ChangeDisplaySettingsEx: flag 0 changes the mode for this session only, CDS_UPDATEREGISTRY saves it, CDS_NORESET is only valid with it. For
+  several displays call once per display with UPDATEREGISTRY|NORESET, then once with a NULL device and mode to apply. The main display must be at
+  0,0 and displays must touch edge to edge. DEVMODEW is 220 bytes (c_int32 and c_uint16, not c_long and c_wchar).
+- SDC flags: INTERNAL 0x1, CLONE 0x2, EXTEND 0x4, EXTERNAL 0x8, APPLY 0x80. HDR: DisplayConfig info types 9, 10, 11; Windows 11 22H2 added 15, 16, 17.
+- Scale and Night light have no documented setter; their state lives in undocumented values (Night light is a CloudStore blob): do not read or write them.
+
+Bluetooth (bluetooth.py)
+- Association endpoint protocol ids: classic {e0cbf06c-cd8b-4647-bb8a-263b43f0f974}, LE {bb7bb05e-5972-42b5-94fc-76eaa7084d49}. Watchers filter
+  (System.Devices.Aep.ProtocolId:="{guid}") with DeviceInformationKind.AssociationEndpoint. Pairing uses customPairing.PairAsync(ceremonies, level);
+  the PairingRequested handler runs on another thread, so take a deferral and resolve it from the main thread.
+- Radio.GetRadiosAsync only sees radios of the same architecture (32-bit Python on 64-bit Windows finds none). Radio.SetStateAsync can raise
+  ERROR_BUSY (retry); call Radio.RequestAccessAsync first. BluetoothMinorClass members share numbers, so decode the raw class of device.
+- bthserv starts on demand, so "stopped" is normal. Windows has no documented way to connect or disconnect a paired device.
+
+Sound (sound.py)
+- IPolicyConfig (CLSID {870AF99C-171D-4F9E-AF0D-E63DF40C2BC9}, IID {F8679F50-850A-41CF-9C72-430F290290C8}) is undocumented; its method order after IUnknown
+  is GetMixFormat, GetDeviceFormat, ResetDeviceFormat, SetDeviceFormat, GetProcessingPeriod, SetProcessingPeriod, GetShareMode, SetShareMode,
+  GetPropertyValue, SetPropertyValue, SetDefaultEndpoint (slot 13), SetEndpointVisibility. Roles: 0 console, 1 multimedia, 2 communications.
+- EnumAudioEndpoints with state mask 1|2|8 matches the Sound settings. "No default device" is HRESULT 0x80070490, not an error.
+- Mono audio is HKCU\Software\Microsoft\Multimedia\Audio\AccessibilityMonoMixState (community only, so read only). The startup-sound policy is
+  HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\DisableStartupSound. Classic dialog tabs: control.exe mmsys.cpl,,0 to ,,3.
+
+Environment variables (environment.py)
+- Variables live in HKCU\Environment and HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment. A value with %VAR% must be
+  REG_EXPAND_SZ or it is not expanded. A new process gets system then user variables (user wins, only PATH is concatenated). Programs learn of a
+  change from a WM_SETTINGCHANGE "Environment" broadcast; open terminals never see it. setx truncates at 1,024 characters, so it is not used.
+
+Windows Update (update.py)
+- WUA search criteria: IsInstalled, IsHidden, BrowseOnly (1 = optional), Type='Driver'|'Software', UpdateID. OperationResultCode 0 to 5.
+  IUpdate.IsHidden is settable only by administrators. Install fails with E_ACCESSDENIED from a remote session.
+- Pause by policy: PauseFeatureUpdatesStartTime / PauseQualityUpdatesStartTime (yyyy-MM-dd) under HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate;
+  Windows adds 35 days. ExcludeWUDriversInQualityUpdate = 1 leaves drivers out. Windows 11 still writes "Windows 10 Pro" in ProductName: build 22000
+  and up is Windows 11. A stopped wuauserv, BITS or UsoSvc is normal (on demand). wusa /uninstall /quiet is reported as deprecated on newer builds.
+
 ======================================================================
 OPEN ISSUES (things a future prompt may be about)
 ======================================================================
@@ -412,9 +493,12 @@ OPEN ISSUES (things a future prompt may be about)
 - netmon: "net" was wifi's alias until netmon took it (wifi keeps "internet" and "wf"). A duplicate
   alias does not fail: _core.registry() keeps whichever page loads last, so check after any alias change
   that "net" and "nm" route to netmon and "wifi" still works.
-- netmon: bytes per connection and per program are not measured. The only Windows source is ETW
-  (Microsoft-Windows-Kernel-Network), which needs administrator rights and a trace session. Adding it
-  would be a separate page or an opt-in admin mode.
+- netmon: "net bytes" (bytes per program, address and protocol) is an opt-in administrator measurement with logman and
+  Get-WinEvent, not run on Windows. Check first: logman accepts -bs 1024 -nb 4 16 -max 256; "logman query -ets" shows no
+  leftover session afterwards; "net bytes --json" events.seen and events.counted_ids (if counted is 0 while seen is not empty,
+  the field names differ); ports are not byte-swapped (443 shown as 47873 would break the per-connection match in "net <id>",
+  not the per-program totals); how long reading a busy trace takes (the limit is 900 s); totals slightly below "net iface" over
+  the same seconds; IPv6 ids 26/27/58/59 and ToXml() formatting of addresses and ports.
 - netmon: connection duration is "since netmon first saw it", kept in net-seen.json. Windows does not
   give the real start time of a socket to ordinary users.
 - netmon: a reverse DNS lookup can take seconds. Commands wait up to 2 s, live refreshes 0.3 s, and the
@@ -433,11 +517,15 @@ OPEN ISSUES (things a future prompt may be about)
   certificate, TTLS) in _net.py are untested.
 - services: start, stop, restart and startup type are not yet verified from an administrator terminal.
   Only the read-only paths (svc ls, svc <id>, --json) and the refusals without admin were run here.
-- device changes (enable, disable, restart, driver add and rm) were written and tested only with the Windows
-  readings and pnputil faked. Not yet run on Windows. Check: pnputil's exit codes (a success that needs a
-  restart returns 3010, which the page treats as a failure), the wording of its output, that
-  /delete-driver without /force refuses a package that is in use, and that the read-back shows the change.
-- device: not built yet: rescan, drivers export, backup, rollback, and diff (which needs a saved inventory).
+- device changes (enable, disable, restart, rescan, rollback, driver add and rm, drivers export, backup, diff) were written and
+  tested only with the Windows readings and pnputil faked. Not yet run on Windows. Check: that a change needing a restart
+  really exits 3010 and the page says so; the wording of pnputil's output; that /delete-driver without /force refuses a package
+  that is in use; /scan-devices shows a device just plugged in; the export folder names and the read-back count and size match,
+  and the size estimate in the question is close; /enum-drivers still parses; that the read-back shows each change; the Windows
+  version registry values for "dvc backup" exist on Windows 11; snapshot size and time on a PC with about 800 devices.
+- device rollback uses DiRollbackDriver from newdev.dll. Not confirmed: the value of ROLLBACK_FLAG_NO_UI (used 1) and the error code
+  when there is no earlier driver (the page prints the code and says rollback only works when Windows kept the previous driver).
+  Try a device with an earlier driver and one without.
 - device: connection speed and power for usb, and resolutions and refresh rates for displays, are not read yet.
 - device: hidden devices are not listed separately, and the problem texts for codes other than the ones seen
   here are from the CM_PROB list and are untested on a PC with that problem.
@@ -448,6 +536,66 @@ OPEN ISSUES (things a future prompt may be about)
   connection; how long Get-NetFirewallRule takes on a PC with many rules (the list call allows 120 s); and that
   Set-NetFirewallProfile with -Profile Domain,Private,Public works from a non-elevated terminal (it should refuse).
   The rule name check only lets letters, digits, dots, braces and dashes through to PowerShell.
+- defender: not run on Windows. Check: property names in Get-MpComputerStatus and Get-MpPreference (including SmartAppControlState)
+  and enum values (MAPSReporting 0/1/2, SubmitSamplesConsent 0-3, PUA/Network/CFA 0/1/2, ScanScheduleDay 0-8, ScanParameters 1/2);
+  that numbers bind in Set-MpPreference; threat status and severity numbers (ThreatStatusID 1-6 and 102-107, SeverityID 1/2/4/5,
+  CleaningActionID); ScanScheduleTime accepts 'HH:MM:SS'; event ids 1005 and 5013 and the Message text read for Scan ID, Scan
+  Parameters and the 5007 old/new values; whether Start-MpScan, Update-MpSignature and Remove-MpThreat work from a non-elevated
+  terminal; whether a detached scan keeps running after the command exits and "MpCmdRun -Scan -Cancel" stops it; the
+  windowsdefender:// pages (threatsettings, fullhistory, wdoscan are from community sources) and the ms-settings:windowsdefender
+  fallback; the 19 attack surface reduction GUIDs and names (a few checked, the rest from memory) and the Smart App Control key;
+  policy value names under HKLM\SOFTWARE\Policies\Microsoft\Windows Defender; whether "N/A: Must be an administrator to view
+  exclusions" is the real wording (any list item starting "N/A" is treated as hidden).
+- privacy: not run on Windows. Check: LastUsedTimeStop == 0 means "in use" (open the camera app, run "priv now"); the device switch
+  (HKLM Value) matches Settings' "Camera access"; the policy list value type (REG_MULTI_SZ assumed, text also handled); that Settings
+  reflects "priv general" changes and shows the "managed by your organization" banner after diagnostics or activity policy writes;
+  whether HttpAcceptLanguageOptOut takes effect at the next sign-in; the raw-named capabilities (activity, bluetooth, usb and the
+  like) the page could not name; psutil exe paths against registry paths (stale-program detection); the Settings URIs. Windows 11
+  builds may have removed the Activity history Settings page: confirm that policy still has an effect.
+- display: not run on Windows. Check: "dsp" lists every display with a sensible name (built-in panels may be "Built-in display"); if
+  it errors, suspect the struct layouts first (PATH_INFO 72, MODE_INFO 64, TARGET_NAME 420, PREFERRED_MODE 80; 72 and 64 were not
+  confirmed by search); the scale matches Settings (100% on a scaled display means the DPI awareness call failed); "Windows
+  recommends N%" is read from DisplayConfigGetDeviceInfo type -3, which is not in the SDK headers (read only; the line just
+  disappears if wrong); "dsp res" on a spare monitor: the countdown, y keeps it, no key reverts after 15 s, Ctrl+C reverts, it
+  survives a sign-out, and the save with UPDATEREGISTRY|NORESET causes no second flicker; right-of and primary (the staging then the
+  NULL commit) and their timeout revert; hdr against Settings' "Use HDR" on 24H2; DMDO_90 is what Settings calls Portrait;
+  "dsp project" with a second screen including the DisplaySwitch.exe fallback; "connected but not in use" after project internal.
+- bluetooth: not run on Windows. Check: the pywinrt names (find_all_async, create_watcher, add_added, add_pairing_requested,
+  get_deferral, accept(pin), unpair_async) and the enum names; that properties map values arrive as plain Python types; that
+  DeviceInformation.pairing.custom.pair_async works from a console app (Windows may show its own prompt); the battery property
+  {104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2 (community scripts, undocumented; matched by DEV_<12 hex> in the PnP instance id); the
+  profiles in "bt <id>" come from Enum\BTHENUM and Enum\BTHLEDEVICE key names containing the address (from memory); fsquirt.exe
+  -send / -receive (one community source; the file argument is unconfirmed) and bthprops.cpl; that "bt off" disconnects and "bt on"
+  restores; the retry on ERROR_BUSY; the PID check in "bt service restart".
+- sound: not run on Windows. Check first, in order: "snd default <id>" really changes the default (if not, the page opens Settings
+  and exits 1: this is the undocumented IPolicyConfig call); the device list and names match Settings > System > Sound; "snd <id>
+  volume" and mute move the Settings slider; the format line matches Properties > Advanced; "snd level" moves while music plays; a
+  microphone meter reads 0 with no recording program, and "snd level listen" (a shared-mode IAudioClient stream) works and shows the
+  microphone indicator; "snd test" is audible; the sc query lines in "snd why"; "snd startup off" as administrator then reg query;
+  "snd mono" reads 1 after turning Mono audio on in Settings; the Settings URIs; "snd classic recording" opens the Recording tab.
+  Not built because no documented way exists: turning a device on or off, per-app output devices, changing Mono audio, spatial
+  audio, exclusive mode, the sample rate. Under --json --yes the page asks silently (a local _confirm), because _core.confirm
+  prints the question and would corrupt the JSON; other pages print the question to stdout in that case.
+- environment: not run on Windows. Check: a new terminal sees a change; the SendMessageTimeoutW broadcast returns non-zero; HKLM
+  writes succeed elevated and refuse cleanly otherwise; a REG_EXPAND_SZ Path round-trips intact; the protected-name list comes from
+  knowledge of Windows' predefined variables, not from a Microsoft list; network-drive PATH entries may look "missing"; kinds other
+  than text are shown as "other" and ignored by Windows.
+- update: not run on Windows. Check first: DATES. IUpdateHistoryEntry.Date and the AutoUpdate results are not documented as UTC or
+  local; the page reads them as UTC (HISTORY_IS_UTC and COM_DATES_ARE_UTC in update.py): compare one "wu history" entry with Settings >
+  Windows Update > Update history and flip the flag if the hour is off by your UTC offset. Then: the "wu ls" fields (BrowseOnly,
+  Type, MsrcSeverity and the driver properties; a missing BrowseOnly means optional updates go unmarked); "wu install" (Download and
+  Install return per-update results, AcceptEula works, the second search finds the same UpdateIDs; it needs a console at the PC, not a
+  remote session); "wu pause" (whether Settings shows the pause or "managed by your organization", whether Windows honours a start
+  date in the past, that Home is detected by EditionID starting with "Core"); wusa /uninstall /quiet exit codes and the Settings
+  fallback; "wu options microsoft on|off"; the status call takes about a second. Policy from device management (MDM/Intune,
+  HKLM\SOFTWARE\Microsoft\PolicyManager) is not detected, only Group Policy keys; an update's kind is guessed from its categories.
+- settings: "settings search" ranks by where a word is found (name, alias, KEYWORDS, summary, command rows, tip) and every word must
+  match the same setting. KEYWORDS lines exist on every page; add words there when people look for a page under a different name.
+- The newer pages' PowerShell comes through _win.powershell, which wraps each script so errors return as plain text. The older
+  runners (firewall._ps, brightness._powershell, events._powershell, _probe._powershell) were left alone. Confirm on Windows that
+  _win.powershell returns clean UTF-8 (no BOM, no CLIXML on stderr) with a script that fails on purpose.
+- Several pages copy location.py's "managed by your organisation" check (privacy, defender; update has its own). If it changes,
+  move it into _win.py and share it.
 - location.py predates _core's helpers and has its own is_admin and flag handling.
 - app.py's console uses shlex.split, which eats backslashes for every page except regedit.
 - Piping the console's output without PYTHONIOENCODING=utf-8 crashes on the banner.
@@ -466,7 +614,7 @@ risky one last with its warning, and a TIP that heads off the first thing that g
 
 firewall (fw): Windows Firewall. fw shows each profile and the networks this PC is on, fw rules lists the rules with filters, and fw rule <id> explains one. Turning a profile off asks first and warns about public networks, and turning off a profile also stops the net block rules. Rules are changed on and off, not deleted.
 
-netmon (net, nm, traffic): What is on the network right now, and what is responsible for it. The overview answers "is anything unusual?" in one screen; "net live" keeps it updating; "net <id>" explains one connection and offers the two actions that change something (kill the program, block the address), each asking first. Shows connections, programs, domains and bytes per adapter. It does not promise bytes per program, because Windows does not give them to ordinary users.
+netmon (net, nm, traffic): What is on the network right now, and what is responsible for it. The overview answers "is anything unusual?" in one screen (typing net alone runs it); "net live" keeps it updating; "net <id>" explains one connection and offers the two actions that change something (kill the program, block the address), each asking first. Shows connections, programs, domains and bytes per adapter. Bytes per program are the opt-in "net bytes", which runs a Windows trace session for a few seconds as administrator, always stops it, and keeps the result for an hour so the lists can show it.
 
 settings (menu): The front door. Someone who does not know the commands types "settings" and sees every setting in one numbered, blue list, with what each does and the first command to type. They can then type a number or a name at the prompt to open a setting's intro. It should always be the easiest thing to find, so every new page has to show up here with a clear SUMMARY.
 
@@ -480,7 +628,7 @@ apps (app): Find an installed app and uninstall it, with the same list you would
 
 process (prc): Find what is using the CPU or memory and end it. The intro leads with prc ls, then prc ls /verbose for live numbers, then prc kill last, with the warning that unsaved work is lost. Red rows are Windows system programs, and the TIP says so.
 
-wifi (net, internet, wf): Getting online quickly, then everything Settings has for Wi-Fi. The most common path is wifi on, which joins the best saved network. For a new network it is wifi ls, then wifi <id> on, which asks for the password. wifi info is the readable ipconfig: the radio (band, channel, signal, speed), then the addresses, then the settings, each section in its own colour. Known networks (wifi known) are every saved profile, in range or not, with forget, auto-connect, metered and random-address switches each. The settings group covers ip, dns, metered, random hardware addresses, 802.1X (wifi auth, which explains that it only applies to work and school networks), sharing and features, then the hotspot. The intro leads with the everyday actions and puts the settings under headings. The TIP says to run wifi ls first, and it should mention that Windows needs Location on to show network names.
+wifi (internet, wf): Getting online quickly, then everything Settings has for Wi-Fi. The most common path is wifi on, which joins the best saved network. For a new network it is wifi ls, then wifi <id> on, which asks for the password. wifi info is the readable ipconfig: the radio (band, channel, signal, speed), then the addresses, then the settings, each section in its own colour. Known networks (wifi known) are every saved profile, in range or not, with forget, auto-connect, metered and random-address switches each. The settings group covers ip, dns, metered, random hardware addresses, 802.1X (wifi auth, which explains that it only applies to work and school networks), sharing and features, then the hotspot. The intro leads with the everyday actions and puts the settings under headings. The TIP says to run wifi ls first, and it should mention that Windows needs Location on to show network names.
 
 ethernet (eth, lan, wired): The wired connection, the same as Settings > Ethernet and the adapter's Properties. It leads with eth info, which flags a self-assigned 169.254 address as "no DHCP server answered", the usual reason a cable "has no internet". Then ip, dns, metered (written where Settings keeps it, under DusmSvc, and the Data Usage service is restarted so it applies), 802.1X (eth auth: on starts Wired AutoConfig and sets it to start with Windows; method, who signs in, remember credentials, fallback and single sign-on), sharing and features. If a PC has more than one wired adapter, eth ls numbers them and eth <id> <command> picks one.
 
@@ -494,4 +642,18 @@ services (svc): The Windows services list, the same as services.msc. It leads wi
 
 events (evt): The Windows event logs, read so that an agent can reconstruct what happened before a problem. Everyday commands are evt errors, evt recent and evt search. Then the problems by cause (crashes, shutdowns, boot, drivers, services, network, security), then patterns over time (correlate, timeline, frequency, baseline), then logs (list, filter, export, watch, clear). Times read as 2h or 3d. Most logs need no administrator rights; the Security log and boot times do, and the page says so. evt clear is the only change, and it asks for the log's name to be typed, with a backup first unless --no-backup is given. --yes does not skip it.
 
-device (dvc): The Device Manager list, read without changing anything. It leads with dvc ls, then dvc <id> for one device (its driver, what it is plugged into, and its status), then dvc errors for what is wrong. Ids are numbered by name, so they shift. The TIP says that reading needs no administrator rights. The changes (enable, disable, restart, driver add and rm) need an administrator terminal, check it before asking, and read the device back. The 'not connected' state is not an error, and the errors page says so.
+device (dvc): The Device Manager list, and changes to it. It leads with dvc ls, then dvc <id> for one device (its driver, what it is plugged into, and its status), then dvc errors for what is wrong. Ids are numbered by name, so they shift. The TIP says that reading needs no administrator rights. The changes (enable, disable, restart, driver add and rm) need an administrator terminal, check it before asking, and read the device back. The 'not connected' state is not an error, and the errors page says so. The changes (enable, disable, restart, rescan, rollback, driver add and rm, drivers export) need an administrator terminal, check it before asking, and read the device back. rescan is harmless and does not ask. A change that exits 3010 worked and needs a restart: the page says so. backup saves a JSON inventory under device-snapshots; diff answers 'what changed since it last worked'.
+
+defender (def, av, wd): Windows Security's virus and threat protection. def gives a verdict, then each protection, signatures, scans, threats and services. def why lists what is wrong with the command that fixes each. Scans run in the background. Turning protection off asks and states the cost. Tamper Protection and organisation policy are reported, never bypassed. Exclusions and def clean ask first.
+
+privacy (priv, perm, permissions): who can use the camera, microphone, location and the rest, and what is using them right now. priv answers it in one screen; priv now answers "is anything using my camera this second". Switches go from priv camera off to one app with priv camera 3 off, and priv why finds the first switch that blocks. Turning a permission on asks first. A policy-owned switch is refused, never overridden. priv general covers the privacy settings with a documented value or policy. Location is only read here: lc changes it.
+
+display (dsp, res, resolution): Settings > System > Display. dsp lists each display and says in plain words what could be better (a 144 Hz monitor at 60 Hz, a non-native resolution, a scale different from the recommended one), each with its fix command. Everyday: res and hz; then rotate, primary, placement, pos, hdr, project. Every picture change is tested, applied unsaved and reverted after 15 s unless y is pressed. Scale and Night light open Settings. No administrator rights.
+
+bluetooth (bt): See and manage Bluetooth. bt shows the radio and the paired devices. bt on|off switches the radio, and asks first if devices are connected, because a Bluetooth keyboard would stop. bt scan then bt pair <n> pairs a device in pairing mode, with Windows' own questions answered here: a code match is never answered by --yes, and an agent passes --code instead. bt rm unpairs and asks first. bt why lists what stops Bluetooth working. Connecting and disconnecting a paired device has no Windows API, so bt connect opens Settings.
+
+sound (snd, audio): Which speakers and microphone Windows uses, and "why is there no sound". snd lists the devices (playback, then recording) with the defaults marked; snd default <id> switches and reads back. Device volume and mute are per device (one app's volume is vm). snd why walks the usual causes and names the fix for each. Anything Windows gives no way to do (Mono audio, per-app output, turning a device on or off) opens the right Settings page. Only the startup-sound policy needs administrator rights.
+
+environment (env, vars): Environment variables and PATH, like Advanced system settings but with a diff and an undo. The common jobs are env path add, env set and env path clean. Yours is the default; --system needs administrator, checked first. Every change saves a JSON backup, and protected names need their name typed.
+
+update (wu, winupdate, updates): Windows Update. wu shows how updates are doing and why they may not arrive: a verdict first (healthy, or what needs attention with the command that fixes it), then the Windows version, last check, restart waiting, pause, policy from an organisation, and the services. wu ls searches and numbers the pending updates; wu install <id>|all downloads and installs them (administrator, asks, never restarts). Every action re-searches and matches by the update's own id, because ids shift. wu history and wu failed explain results in plain words; wu why runs every check. Pausing is the documented Windows Update for Business policy, so Settings may say "managed by your organization"; Windows Home ignores it and gets the Settings page instead. Anything Windows has no documented way to change (active hours, metered downloads, restart notices) is read here and changed in Settings (wu open).
