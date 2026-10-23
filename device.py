@@ -127,6 +127,7 @@ PAGE = 40  # rows per page in the listings
 RESTART_CODES = (3010, 1641)  # ERROR_SUCCESS_REBOOT_REQUIRED / a restart was started: it worked, a restart finishes it
 NO_MORE_ITEMS = 259  # ERROR_NO_MORE_ITEMS: no matching device, or every device already has a better driver
 RESTART_TEXT = "Windows needs a restart to finish this."
+OEM_INF = re.compile(r"oem\d+\.inf")  # the same shape _third_party_packages reads
 SNAPSHOT_DIR = "device-snapshots"  # inside _win.data_dir()
 ROLLBACK_FLAG_NO_UI = 0x00000001  # newdev.h: DiRollbackDriver shows no dialogs
 INVALID_HANDLE = ctypes.c_void_p(-1).value
@@ -266,7 +267,7 @@ def _driver_store():
 # FINDING — one device by id or name
 # ======================================================================
 def _find(word, rows):
-    if word.isdigit():
+    if word.isdecimal():
         for row in rows:
             if row["id"] == int(word):
                 return row
@@ -409,6 +410,11 @@ def _device_action(row, action, options):
             print(f"  {now['problem_text']}")
     if restart:
         print(RESTART_TEXT)
+    wanted = {"enable": "working", "disable": "disabled"}.get(action)
+    if wanted and (now is None or now["state"] != wanted):
+        print(f"{row['name']} is not {wanted} after the change, so it did not take effect.", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _driver_add(words, options):
@@ -439,7 +445,7 @@ def _driver_remove(words, options, rows):
     inf = ((_driver_packages().get(row["instance_id"].upper()) or {}).get("inf") or "").lower()
     if not inf:
         raise DeviceError(f"Windows does not name a driver package for {row['name']}, so there is nothing to remove.", 2)
-    if not inf.startswith("oem"):
+    if not OEM_INF.fullmatch(inf):
         raise DeviceError(f"{inf} came with Windows, not from a driver you installed, so it cannot be removed here.", 2)
     _net.need_admin()
     if not _core.confirm(f"Remove driver package {inf} ({row['name']})? Windows removes it from every device that uses "
@@ -560,7 +566,7 @@ def _drivers_export(words, options):
         inf = ((_driver_packages().get(row["instance_id"].upper()) or {}).get("inf") or "").lower()
         if not inf:
             raise DeviceError(f"Windows does not name a driver package for {row['name']}, so there is nothing to export.", 2)
-        if not inf.startswith("oem"):
+        if not OEM_INF.fullmatch(inf):
             raise DeviceError(f"{inf} came with Windows, not from a driver you installed, so it cannot be exported here.", 2)
         package, name = inf, row["name"]
     _net.need_admin()
@@ -748,6 +754,8 @@ def _load_snapshot(path):
         raise DeviceError(f"could not read {path}: {e}", 2)
     if not isinstance(data, dict) or not isinstance(data.get("devices"), list):
         raise DeviceError(f"{path} is not a device backup. 'device backup' makes one.", 2)
+    if not all(isinstance(item, dict) and isinstance(item.get("instance_id"), str) for item in data["devices"]):
+        raise DeviceError(f"{path} is damaged: some of its devices have no instance ID. Make a new one with 'device backup'.", 1)
     return data
 
 
@@ -827,7 +835,7 @@ def _backup_list(options):
 
 def _backup_remove(words, options):
     files = _snapshot_files()
-    if len(words) != 1 or not words[0].isdigit():
+    if len(words) != 1 or not words[0].isdecimal():
         raise DeviceError("usage: device backup rm <n>   (device backup ls shows the numbers)", 2)
     number = int(words[0])
     if not 1 <= number <= len(files):
@@ -865,7 +873,7 @@ def _backup_cmd(words, options):
 
 def _pick_snapshot(word):
     """(path, n) of the snapshot to compare with: the newest, the nth, or a file. n is None for a file."""
-    if word is not None and not word.isdigit():
+    if word is not None and not word.isdecimal():
         path = Path(os.path.expanduser(word))
         if not path.is_file():
             raise DeviceError(f"no file called {word}. 'device backup ls' lists the saved backups.", 2)
@@ -1002,7 +1010,7 @@ def _list_options(words):
             options["mfg"] = value.lower()
         elif word == "sort" and value and value.lower() in SORTS:
             options["sort"] = value.lower()
-        elif word == "page" and value and value.isdigit() and int(value) >= 1:
+        elif word == "page" and value and value.isdecimal() and int(value) >= 1:
             options["page"] = int(value)
         elif word in STATE_WORDS:
             options["state"] = STATE_WORDS[word]
@@ -1297,7 +1305,7 @@ def run(args):
         elif word == "driver" and rest[:1] and rest[0].lower() in REMOVE_WORDS:
             _driver_remove(rest[1:], options, _devices())
         elif len(args) == 2 and args[1].lower() in ACTION_WORDS:
-            _device_action(_find(args[0], _devices()), ACTION_WORDS[args[1].lower()], options)
+            return _device_action(_find(args[0], _devices()), ACTION_WORDS[args[1].lower()], options) or 0
         elif len(args) == 1:
             _inspect(args[0], _devices(), options)
         else:

@@ -541,7 +541,7 @@ def _paired(battery=True):
 
 def _find(word, devices):
     """One paired device by id, address or name (an exact name, or text that only one name contains)."""
-    if word.isdigit():
+    if re.fullmatch(r"[0-9]+", word):
         for item in devices:
             if item["id"] == int(word):
                 return item
@@ -774,6 +774,11 @@ def _on_off(on, options):
         try:
             connected = [item for item in _paired(battery=False) if item["connected"]]
         except BluetoothError:
+            # unknown is not "nothing connected": a Bluetooth keyboard could be what is typing this
+            if not _confirm("Could not check for connected devices; turn Bluetooth off anyway? A connected Bluetooth "
+                            "keyboard or mouse would stop working until 'bt on'. [y/N]: ", options):
+                _say(options, "cancelled")
+                return
             connected = []
         if connected and not _confirm(
                 f"Turn Bluetooth off? {len(connected)} connected device(s) will disconnect: "
@@ -939,7 +944,7 @@ def _load_scan():
 
 
 def _scan(words, options, extras):
-    if len(words) > 1 or (words and not words[0].isdigit()):
+    if len(words) > 1 or (words and not re.fullmatch(r"[0-9]+", words[0])):
         raise BluetoothError("usage: bt scan [seconds] [--all]   (3 to 60 seconds, 10 by default)", 2)
     seconds = int(words[0]) if words else SCAN_DEFAULT
     if not SCAN_MIN <= seconds <= SCAN_MAX:
@@ -980,7 +985,7 @@ def _scan_target(word, options):
     """The scanned device a pair command means: a number from the saved scan, or an address or name (looked for live
     if the saved scan does not have it)."""
     saved, age = _load_scan()
-    if word.isdigit():
+    if re.fullmatch(r"[0-9]+", word):
         if saved is None:
             raise BluetoothError("there is no saved scan. Run 'bt scan' first, then 'bt pair <n>'.", 2)
         if age > SCAN_FRESH:
@@ -1169,17 +1174,23 @@ def _remove(words, options):
         return
     _say(options, f"removing {item['name']}...")
     status = "UNPAIRED"
+    done = []
     for device in item["_devices"]:
         pairing = _get(_get(device, "device_information"), "pairing")
         if pairing is None:
             info = _wait(lambda: rt["info"].create_from_id_async(device.device_id))
             pairing = _get(info, "pairing")
+        earlier = f" (the {done[0]} pairing was already removed)" if done else ""
         if pairing is None:
-            raise BluetoothError(f"Windows gave no way to unpair {item['name']}. Use 'bt open'.")
-        result = _wait(lambda: pairing.unpair_async())
+            raise BluetoothError(f"Windows gave no way to unpair {item['name']}{earlier}. Use 'bt open'.")
+        try:
+            result = _wait(lambda: pairing.unpair_async())
+        except BluetoothError as e:
+            raise BluetoothError(f"{e}{earlier}")
         status = _name(rt["unpair_status"], result.status)
         if status not in ("UNPAIRED", "ALREADY_UNPAIRED"):
-            raise BluetoothError(f"could not remove {item['name']}: {UNPAIR_PROBLEMS.get(status, status.lower())}")
+            raise BluetoothError(f"could not remove {item['name']}: {UNPAIR_PROBLEMS.get(status, status.lower())}{earlier}")
+        done.append("low energy" if _get(device, "appearance") is not None else "classic")
     still = _paired_after(item["address"], want_present=False) if item["address"] else None
     if options["json"]:
         _core.print_json({"removed": still is None, "name": item["name"], "address": item["address"],
@@ -1409,7 +1420,7 @@ def _extra_flags(args):
         lowered = word.lower()
         if lowered in ("--pin", "--code"):
             value = args[index + 1] if index + 1 < len(args) else ""
-            if not value.isdigit():
+            if not re.fullmatch(r"[0-9]+", value):
                 raise BluetoothError(f"{lowered} needs the digits, e.g. {lowered} 0000", 2)
             extras[lowered[2:]] = value
             skip = True

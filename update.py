@@ -382,6 +382,11 @@ PS_MICROSOFT_OFF = "$manager = New-Object -ComObject Microsoft.Update.ServiceMan
 # ======================================================================
 # SMALL HELPERS — times, sizes, messages
 # ======================================================================
+def _is_num(word):
+    """Plain digits only: str.isdigit() also accepts characters such as superscript 2, which int() rejects."""
+    return re.fullmatch(r"[0-9]+", word) is not None
+
+
 def _as_list(value):
     """PowerShell writes a one-item list as the item itself sometimes; always get a list."""
     if value is None:
@@ -713,7 +718,7 @@ def _recent(name):
 
 def _pick(word, updates, name):
     """The update(s) a word names: an id from the last list, a KB number, or a (start of an) update id."""
-    if word.isdigit() and len(word) <= 4:
+    if _is_num(word) and len(word) <= 4:
         number = int(word)
         saved = _recent(name)
         if saved is not None:
@@ -1048,7 +1053,7 @@ def _install(words, options):
     if not words:
         raise UpdateError("usage: wu install <id|KB>... | all | drivers", 2)
     for word in words:
-        if word.lower() not in ("all", "drivers") and not (word.isdigit() and len(word) <= 4) \
+        if word.lower() not in ("all", "drivers") and not (_is_num(word) and len(word) <= 4) \
                 and not KB_WORD.match(word) and not re.fullmatch(r"[0-9a-fA-F-]{8,36}", word):
             raise UpdateError(f"'{word}' is not an update id, a KB number, 'all' or 'drivers'. "
                               "Run 'wu ls' to see them.", 2)
@@ -1130,7 +1135,7 @@ def _history_words(words, failed_only):
     for word in words:
         if word.lower() == "all" and not failed_only:
             include_definitions = True
-        elif word.isdigit() and 1 <= int(word) <= HISTORY_MAX:
+        elif _is_num(word) and 1 <= int(word) <= HISTORY_MAX:
             count = int(word)
         else:
             raise UpdateError(f"usage: wu {'failed [n]' if failed_only else 'history [n] [all]'}   "
@@ -1211,7 +1216,7 @@ def _hide_cmd(words, options, hide):
     if not words:
         raise UpdateError(f"usage: wu {verb} <id|KB>" + ("" if hide else " | all"), 2)
     for word in words:
-        if not ((word.isdigit() and len(word) <= 4) or KB_WORD.match(word) or (not hide and word.lower() == "all")):
+        if not ((_is_num(word) and len(word) <= 4) or KB_WORD.match(word) or (not hide and word.lower() == "all")):
             raise UpdateError(f"'{word}' is not an update id or a KB number", 2)
     _net.need_admin()
     _note(options, "searching Windows Update (this can take a minute)...")
@@ -1308,7 +1313,7 @@ def _uninstall(words, options):
 def _pause_cmd(words, options):
     days = PAUSE_DAYS
     if words:
-        if len(words) != 1 or not words[0].isdigit() or not 1 <= int(words[0]) <= PAUSE_DAYS:
+        if len(words) != 1 or not _is_num(words[0]) or not 1 <= int(words[0]) <= PAUSE_DAYS:
             raise UpdateError(f"usage: wu pause [days]   (1 to {PAUSE_DAYS}; the default is {PAUSE_DAYS})", 2)
         days = int(words[0])
     if _windows()["home"]:
@@ -1331,11 +1336,20 @@ def _pause_cmd(words, options):
         _note(options, "cancelled")
         return 0
     _note(options, f"pausing updates until {until:%Y-%m-%d}...")
-    for name in PAUSE_NAMES:
-        _win.reg_write(_win.HKLM, POLICY_KEY, name, start.isoformat(), winreg.REG_SZ)
     record = _record()
     record["pause"] = {"start": start.isoformat(), "until": until.isoformat(), "written": _iso(datetime.now())}
-    _win.save_json(POLICY_RECORD, record)
+    _win.save_json(POLICY_RECORD, record)  # first: values this page writes must be marked as its own
+    try:
+        for name in PAUSE_NAMES:
+            _win.reg_write(_win.HKLM, POLICY_KEY, name, start.isoformat(), winreg.REG_SZ)
+    except _net.NetError:
+        for name in PAUSE_NAMES:  # undo the half-written pause
+            with contextlib.suppress(_net.NetError):
+                _win.reg_delete(_win.HKLM, POLICY_KEY, name)
+        record.pop("pause", None)
+        with contextlib.suppress(_net.NetError):
+            _win.save_json(POLICY_RECORD, record)
+        raise
     now = _pause_state()
     if now["paused"]:
         _note(options, f"Updates are paused until {now['until']}. Settings may not show the date; 'wu' does. "
@@ -1481,6 +1495,11 @@ def _microsoft_cmd(word, options):
     if now is on:
         _note(options, f"updates for other Microsoft products are already {'on' if on else 'off'}.")
         return 0
+    if not on and not _ask("Turn off updates for other Microsoft products? Office and other Microsoft software then stop "
+                           "getting security updates through Windows Update. To undo: 'wu options microsoft on'. "
+                           "[y/N]: ", options):
+        _note(options, "cancelled")
+        return 0
     _note(options, f"turning updates for other Microsoft products {'on' if on else 'off'}...")
     _wua(PS_MICROSOFT_ON if on else PS_MICROSOFT_OFF, SEARCH_TIMEOUT)
     after = _microsoft_update_on()
@@ -1536,10 +1555,17 @@ def _drivers_cmd(words, options):
     if on:
         _win.reg_delete(_win.HKLM, POLICY_KEY, DRIVER_POLICY)
         record.pop("drivers", None)
+        _win.save_json(POLICY_RECORD, record)
     else:
-        _win.reg_write(_win.HKLM, POLICY_KEY, DRIVER_POLICY, 1, winreg.REG_DWORD)
         record["drivers"] = {"written": _iso(datetime.now())}
-    _win.save_json(POLICY_RECORD, record)
+        _win.save_json(POLICY_RECORD, record)  # first: the value must be marked as this page's own
+        try:
+            _win.reg_write(_win.HKLM, POLICY_KEY, DRIVER_POLICY, 1, winreg.REG_DWORD)
+        except _net.NetError:
+            record.pop("drivers", None)
+            with contextlib.suppress(_net.NetError):
+                _win.save_json(POLICY_RECORD, record)
+            raise
     after = _drivers_state()
     _note(options, f"Windows Update now {'includes' if after['drivers_included'] else 'leaves out'} drivers.")
     if _windows()["home"] and not on:
@@ -1637,7 +1663,7 @@ def _dispatch(word, rest, options):
         return _why(options)
     if word == "open":
         return _open(rest)
-    if not rest and ((word.isdigit() and len(word) <= 4) or KB_WORD.match(word) or GUID.match(word)):
+    if not rest and ((_is_num(word) and len(word) <= 4) or KB_WORD.match(word) or GUID.match(word)):
         return _show(word, options)
     raise UpdateError(f"usage: {USAGE}", 2)
 

@@ -1030,7 +1030,7 @@ def _terminate(pid):
 
 
 def _one_id(rest, usage):
-    if len(rest) != 1 or not rest[0].isdigit():
+    if len(rest) != 1 or not rest[0].isdecimal():
         raise NetmonError(usage, 2)
     return int(rest[0])
 
@@ -1044,6 +1044,9 @@ def _kill(rest, options):
         raise NetmonError("that connection belongs to this console. Type 'exit' to close it.", 2)
     if conn["protected"]:
         raise NetmonError(f"{conn['program']} is part of Windows, so netmon will not end it.", 1)
+    if conn["exe"] is None and conn["username"] is None:
+        raise NetmonError(f"Windows shows nothing about {conn['program']} (no file, no account), so netmon cannot tell "
+                          "whether it is part of Windows and will not end it. Use Task Manager.", 1)
     owned = sum(1 for c in conns if c["pid"] == conn["pid"])
     question = (f"End {conn['program']} (pid {conn['pid']})? It has {owned} connection(s), "
                 "and unsaved work in it will be lost. [y/N]: ")
@@ -1098,6 +1101,8 @@ def _block_rules():
         )
     except (OSError, subprocess.SubprocessError):
         raise NetmonError("could not read the Windows Firewall rules")
+    if result.returncode != 0:
+        raise NetmonError(f"could not read the Windows Firewall rules: {_net.explain(result.stderr + result.stdout)}")
     text = result.stdout.strip()
     try:
         rows = json.loads(text) if text else []
@@ -1694,8 +1699,8 @@ def _measure(seconds, options):
     etl = os.path.join(folder, "net.etl")
     running = False
     try:
+        running = True  # set first: Ctrl+C during the logman call may still have started it, and stopping a missing one is harmless
         _start_session(etl)
-        running = True
         began = time.time()
         before = _process_names()
         interrupted = _wait(seconds)
@@ -1998,7 +2003,7 @@ def _dispatch(args):
         return _block(rest, options)
     if word == "unblock":
         return _unblock(rest, options)
-    if word.isdigit():
+    if word.isdecimal():
         return _inspect(int(word), options)
     raise NetmonError(f"unknown netmon command: {words[0]}. Type 'net' for the overview, or 'net help' for the commands.", 2)
 

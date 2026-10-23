@@ -418,6 +418,11 @@ def _result(action, scope, changes, backup=None, notified=None, **extra):
 # ======================================================================
 # BACKUPS — the whole scope, saved as JSON before every change
 # ======================================================================
+def _is_number(word):
+    """Plain digits 0-9 only: str.isdigit() also accepts characters such as '²' that int() cannot read."""
+    return re.fullmatch(r"[0-9]+", word) is not None
+
+
 def _pack(value, kind):
     entry = {"kind": kind, "type": KIND_NAMES.get(kind, f"type {kind}")}
     if isinstance(value, (bytes, bytearray)):
@@ -439,6 +444,8 @@ def _unpack(entry):
     value = entry.get("value")
     if isinstance(value, (str, int)) and not isinstance(value, bool):
         return value, entry["kind"]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return value, entry["kind"]  # REG_MULTI_SZ
     return None
 
 
@@ -678,7 +685,7 @@ def _ls(words, options):
 
 
 def _matching_rows(word, rows):
-    if word.isdigit():
+    if _is_number(word):
         found = [row for row in rows if row["id"] == int(word)]
         if not found:
             raise EnvError(f"no variable with id {word}. Run 'env ls' to see them.", 2)
@@ -937,7 +944,7 @@ def _remove(words, options):
     if len(words) != 1:
         raise EnvError("usage: env rm <NAME|id> [--system]", 2)
     word = words[0]
-    if word.isdigit():
+    if _is_number(word):
         row = _matching_rows(word, _variables())[0]
         scope, name = row["scope"], row["name"]
     else:
@@ -1075,10 +1082,15 @@ def _path_add(words, options):
         raise EnvError('usage: env path add <folder> [--front] [--system]   (quote it in the console: "C:\\Tools")', 2)
     if ";" in text:
         raise EnvError("a PATH entry cannot contain ';'. Add the folders one at a time.", 2)
+    if '"' in text or any(ord(char) < 32 for char in text):
+        raise EnvError("a PATH entry cannot contain a double quote or a control character: a quote would make "
+                       "every later ';' stop separating entries.", 2)
     if LOST_SLASHES.match(text):
         raise EnvError(f"'{text}' looks like a path whose backslashes were lost: the console treats a backslash "
                        'outside quotes as an escape. Put the folder in quotes, e.g. env path add "C:\\Tools".', 2)
     scope, table, part = _path_scope_state(options)
+    if len(part["raw"]) + len(text) + 1 > MAX_VALUE:
+        raise EnvError(f"the PATH would be longer than the {MAX_VALUE:,} characters Windows allows. Nothing was changed.", 2)
     expanded, unknown = _expand(text, table)
     key = _normalise(expanded)
     for item in part["entries"]:
@@ -1128,7 +1140,7 @@ def _path_remove(words, options):
         raise EnvError("usage: env path rm <n|folder> [--system]", 2)
     scope, table, part = _path_scope_state(options)
     entries = part["entries"]
-    if target.isdigit():
+    if _is_number(target):
         number = int(target)
         if not 1 <= number <= len(entries):
             raise EnvError(f"the {_label(scope)} PATH has {len(entries)} entries; there is no entry {number}. "
@@ -1161,7 +1173,7 @@ def _path_remove(words, options):
 
 
 def _path_move(words, options):
-    if len(words) != 2 or not words[0].isdigit() or words[1].lower() not in MOVES:
+    if len(words) != 2 or not _is_number(words[0]) or words[1].lower() not in MOVES:
         raise EnvError("usage: env path move <n> up|down|top|bottom [--system]", 2)
     number, how = int(words[0]), words[1].lower()
     scope, table, part = _path_scope_state(options)
@@ -1287,7 +1299,7 @@ def _backups_remove(words, items, options):
         raise EnvError("usage: env backups rm <n|all>", 2)
     if words[0].lower() == "all":
         chosen = items
-    elif words[0].isdigit() and 1 <= int(words[0]) <= len(items):
+    elif _is_number(words[0]) and 1 <= int(words[0]) <= len(items):
         chosen = [items[int(words[0]) - 1]]
     else:
         raise EnvError(f"no backup {words[0]}. Run 'env backups' to see them.", 2)
@@ -1313,7 +1325,7 @@ def _backups_remove(words, items, options):
 
 def _pick_backup(words, options, usage):
     """The backup an undo or a diff is about: backup n, or the newest one for the chosen scope."""
-    if len(words) > 1 or (words and not words[0].isdigit()):
+    if len(words) > 1 or (words and not _is_number(words[0])):
         raise EnvError(usage, 2)
     items, _ = _backups()
     if words:
@@ -1332,6 +1344,10 @@ def _pick_backup(words, options, usage):
 def _undo(words, options):
     item = _pick_backup(words, options, "usage: env undo [n] [--system]")
     scope = item["scope"]
+    unreadable = [name for name, entry in item["data"]["variables"].items() if _unpack(entry) is None]
+    if unreadable:
+        raise EnvError(f"backup {item['n']} holds value(s) this page cannot read back ({', '.join(unreadable)}), so "
+                       "undoing it could delete them. Nothing was changed.")
     changes = _compare(_read_scope(scope), _backup_values(item))
     if not changes:
         _say(options, f"the {_label(scope)} variables already match backup {item['n']} ({item['saved']}). Nothing to undo.")
@@ -1343,7 +1359,15 @@ def _undo(words, options):
         print(f"going back to backup {item['n']} ({item['saved'].replace('T', ' ')}, {_label(scope)} variables, "
               f"saved before: {item['reason']}) would change:")
         print("\n".join(_change_lines(changes)))
-    if not _ask(f"Put the {_label(scope)} variables back to backup {item['n']}? The current state is saved as a new "
+    touched = [change["name"] for change in changes if _protected(change["name"])
+               or change["name"].lower() in TEMP_NAMES]
+    if touched:
+        names = ", ".join(touched)
+        reason = f"This undo changes {names}, which Windows or programs rely on."
+        if not _typed_yes(touched[0], reason, options):
+            _say(options, "cancelled")
+            return 0
+    if not touched and not _ask(f"Put the {_label(scope)} variables back to backup {item['n']}? The current state is saved as a new "
                 "backup first, so running 'env undo' again goes forward again. [y/N]: ", options):
         _say(options, "cancelled")
         return 0
@@ -1514,7 +1538,7 @@ def run(args):
             return _import(rest, options)
         if word == "show" and len(rest) == 1:
             return _show(rest[0], options)
-        if word.isdigit() and rest:
+        if _is_number(word) and rest:
             return _set_by_id(args, options)
         if len(args) == 1:
             return _show(args[0], options)
