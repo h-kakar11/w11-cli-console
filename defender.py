@@ -391,7 +391,7 @@ class Switch:
         if value is None:
             return "unknown"
         if isinstance(value, str):
-            if value.lstrip("-_isnum(")):
+            if _isnum(value.lstrip("-")):
                 value = int(value)
             else:
                 lowered = value.lower()
@@ -1590,7 +1590,7 @@ def _schedule_cmd(words, options):
 
 
 def _cpu_cmd(words, options):
-    if len(words) > 1 or (words and not _isnum((words[0]) and (int(words[0]) == 0 or 5 <= int(words[0]) <= 100))):
+    if len(words) > 1 or (words and not (_isnum(words[0]) and (int(words[0]) == 0 or 5 <= int(words[0]) <= 100))):
         raise DefenderError("usage: def cpu [0|5-100]   (0 means no limit)", 2)
     if words:
         _net.need_admin()
