@@ -192,6 +192,7 @@ DIAG_MDM = (HKLM, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataColle
 DIAG_WORDS = {0: "off (Enterprise editions only)", 1: "required only", 2: "enhanced", 3: "optional (full)"}
 ACTIVITY_POLICY = (HKLM, r"SOFTWARE\Policies\Microsoft\Windows\System")
 ACTIVITY_VALUES = ("EnableActivityFeed", "PublishUserActivities", "UploadUserActivities")
+POLICY_RECORD = "privacy-policy.json"  # the policy values this page wrote, and what each one was before
 
 
 class PrivacyError(Exception):
@@ -472,11 +473,16 @@ def _words_text(caps):
     return ", ".join(cap["word"] for cap in caps)
 
 
+def _is_number(word):
+    """Whether a typed word is a plain number. (str.isdigit() accepts characters like '²' that int() rejects.)"""
+    return re.fullmatch(r"[0-9]+", word) is not None
+
+
 def _find_cap(word, caps):
     if not caps:
         raise PrivacyError("Windows has no permission store for this account "
                            f"(nothing under HKCU\\{CONSENT_ROOT}).")
-    if word.isdigit():
+    if _is_number(word):
         for cap in caps:
             if cap["id"] == int(word):
                 return cap
@@ -490,7 +496,7 @@ def _find_cap(word, caps):
 
 def _find_app(cap, word):
     apps = cap["apps"]
-    if word.isdigit():
+    if _is_number(word):
         for app in apps:
             if app["id"] == int(word):
                 return app
@@ -672,7 +678,7 @@ def _recent_cmd(words, options):
         lowered = word.lower()
         if lowered == "all":
             everything = True
-        elif lowered.rstrip("d").isdigit() and (lowered.endswith("d") or lowered.isdigit()):
+        elif re.fullmatch(r"[0-9]+d?", lowered):
             days = int(lowered.rstrip("d"))
         else:
             raise PrivacyError("usage: priv recent [days] [all]   (days 1 to 365; all includes every permission)", 2)
@@ -1246,6 +1252,53 @@ def _general_toggle(item, on, options):
     print(f"{item['title']}: {now['state']}." + (f" It applies {item['applies']}." if item.get("applies") else ""))
 
 
+def _policy_record():
+    return _win.load_json(POLICY_RECORD, {}) or {}
+
+
+def _guard_policy(hive, path, names, what):
+    """Refuse to touch policy values that are not this page's own: on a managed PC they belong to the organisation,
+    and anywhere else a value this page did not write is somebody else's choice."""
+    reasons = _managed_reasons()
+    if reasons:
+        raise PrivacyError(f"{what} is managed by your organisation ({'; '.join(reasons)}), so this page does not "
+                           "write or remove its policy. Only your administrator can change it.")
+    record = _policy_record()
+    for name in names:
+        value = _policy_number(hive, path, name)
+        if value is not None and not (name in record and record[name].get("wrote") == value):
+            raise PrivacyError(f"{what}: the policy value {name} = {value} was not written by this page, so it is "
+                               "left alone. Remove it yourself (Group Policy Editor or regedit) if you want to "
+                               "change it.")
+
+
+def _write_policy(hive, path, names, wrote):
+    """Record each value's previous state, then write it. The record comes first, so a value this page writes is
+    always known as its own."""
+    record = _policy_record()
+    for name in names:
+        if name not in record:
+            record[name] = {"wrote": wrote, "previous": _policy_number(hive, path, name)}
+        else:
+            record[name]["wrote"] = wrote
+    _win.save_json(POLICY_RECORD, record)
+    for name in names:
+        _win.reg_write(hive, path, name, wrote, winreg.REG_DWORD)
+
+
+def _restore_policy(hive, path, names):
+    """Put each value back as it was before this page wrote it: the previous number, or no value at all."""
+    record = _policy_record()
+    for name in names:
+        previous = record.get(name, {}).get("previous")
+        if previous is None:
+            _win.reg_delete(hive, path, name)
+        else:
+            _win.reg_write(hive, path, name, previous, winreg.REG_DWORD)
+        record.pop(name, None)
+    _win.save_json(POLICY_RECORD, record)
+
+
 def _diag_set(choice, options):
     level, who = _diag_read()
     if who == "device management":
@@ -1257,6 +1310,7 @@ def _diag_set(choice, options):
         return
     _net.need_admin()
     hive, path = DIAG_POLICY
+    _guard_policy(hive, path, ("AllowTelemetry",), "diagnostic data")
     if choice == "required":
         question = ("Send only required diagnostic data? This sets a Windows policy (AllowTelemetry = 1), so Settings "
                     "shows the choice as managed and you cannot change it there until you run "
@@ -1268,9 +1322,9 @@ def _diag_set(choice, options):
         print("cancelled")
         return
     if choice == "required":
-        _win.reg_write(hive, path, "AllowTelemetry", 1, winreg.REG_DWORD)
+        _write_policy(hive, path, ("AllowTelemetry",), 1)
     else:
-        _win.reg_delete(hive, path, "AllowTelemetry")
+        _restore_policy(hive, path, ("AllowTelemetry",))
     now = _general_state(_general_find("diagnostics"))
     print(f"Diagnostic data: {now['state']}" + (f" (set by {now['set_by']})." if now["set_by"] != "default" else
                                                   ". Settings decides."))
@@ -1289,6 +1343,7 @@ def _activity_set(choice, options):
         return
     _net.need_admin()
     hive, path = ACTIVITY_POLICY
+    _guard_policy(hive, path, ACTIVITY_VALUES, "activity history")
     if choice == "off":
         question = ("Turn activity history off? This sets three Windows policies (EnableActivityFeed, "
                     "PublishUserActivities, UploadUserActivities = 0), so Windows stops recording and sending what "
@@ -1300,11 +1355,10 @@ def _activity_set(choice, options):
     if not _core.confirm(question, options["yes"]):
         print("cancelled")
         return
-    for name in ACTIVITY_VALUES:
-        if choice == "off":
-            _win.reg_write(hive, path, name, 0, winreg.REG_DWORD)
-        else:
-            _win.reg_delete(hive, path, name)
+    if choice == "off":
+        _write_policy(hive, path, ACTIVITY_VALUES, 0)
+    else:
+        _restore_policy(hive, path, ACTIVITY_VALUES)
     now = _general_state(_general_find("activity"))
     print(f"Activity history: {now['state']}" + (f" (set by {now['set_by']})." if now["set_by"] != "default" else
                                                    ". Settings decides."))

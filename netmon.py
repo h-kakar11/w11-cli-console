@@ -1062,7 +1062,7 @@ def _kill(rest, options):
 
 def _block_target(word):
     """(ip, domain) from a connection id or an address."""
-    if word.isdigit():
+    if word.isdecimal():
         conn = _find(_gather(), int(word))
         if not conn["raddr"]:
             raise NetmonError(f"connection {word} has no remote address. Block an address with 'net block <ip>'.", 2)
