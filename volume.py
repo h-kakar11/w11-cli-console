@@ -5,21 +5,30 @@ volume: system and per-app volume for Windows 11. Routed from app.py
     vm ls          list every audio source with its id (0 is the system)
     vm <id>        show the volume of one source
     vm <id> N      set one source to N percent (0-100)
+    vm <name> N    the same by name: vm system 30, vm Chrome 50
 
 Id 0 is the system (master) volume. Every other id is an app that is
 playing or can play audio, such as Discord or Chrome. An app with several
 audio sessions is one id, and changing it changes all of its sessions.
-Ids are numbered by name, so they stay the same until apps start or stop.
+Ids are numbered by name, so they stay the same until apps start or stop;
+a name (or "system") always means the same source, so scripts should use names.
+
+Add --dry-run to see the change without making it, and --json --yes for a script.
+The old level is saved first and 'rb last' puts it back; 'cs' can batch these
+changes (operation: set). Windows keeps volume in steps, so the read-back may
+differ from the request by 1 percent and still counts as applied.
 
 Needs pycaw (see requirements.txt).
 """
 
 import sys
+import types
 
 import psutil
 from pycaw.pycaw import AudioUtilities
 
 import _core
+import _ops
 
 # ======================================================================
 # SETTING INFO — read by app.py to list and route this setting
@@ -33,21 +42,22 @@ USAGE = "type vm ls, or 'volume list'. Change volume by typing 'volume <id> <0-1
 HELP = [
     ("vm ls", "list every audio source with its id (0 is the system)"),
     ("vm <id>", "show the volume of one source"),
-    ("vm <id> <0-100>", "set one source to that percent"),
+    ("vm <id|name> <0-100>", "set one source to that percent (vm system 30, vm Chrome 50)"),
 ]
-TIP = "Example: vm 3 50 sets source 3 to 50%. Ids follow the list, so run 'vm ls' first."
+TIP = "Example: vm Chrome 50 sets Chrome to 50%. Ids follow the list and shift as apps start; a name does not."
+DRY_RUN = True  # the change takes --dry-run, and is saved to the journal for 'rb'
+TOLERANCE = 1  # percent: Windows stores volume in steps, so a read-back can differ a little
 
 SYSTEM_ID = 0
 SYSTEM_NAME = "System"
 SESSION_EXPIRED = 2  # AudioSessionStateExpired
 
 
-class VolumeError(Exception):
-    """An error with an exit code: 1 for device errors, 2 for bad usage."""
+class VolumeError(_core.CommandError):
+    """An error with an exit code: 1 for device errors, 2 for bad usage; error is the machine-readable code."""
 
-    def __init__(self, message, code=1):
-        super().__init__(message)
-        self.code = code
+    def __init__(self, message, code=1, error=None):
+        super().__init__(message, code, error)
 
 
 # ======================================================================
@@ -87,7 +97,20 @@ def _get_source(source_id):
     for sid, name, group in _sources():
         if sid == source_id:
             return name, group
-    raise VolumeError(f"no audio source with id {source_id}. Run 'vm ls' to see them.", 2)
+    raise VolumeError(f"no audio source with id {source_id}. Run 'vm ls' to see them.", 2, "not_found")
+
+
+def _find(word):
+    """(name, group) for an id, 'system', or an app name. A name never shifts; an id can."""
+    word = str(word).strip()
+    if word.isdigit():
+        return _get_source(int(word))
+    if word.lower() == SYSTEM_NAME.lower():
+        return SYSTEM_NAME, None
+    for _, name, group in _sources():
+        if group is not None and name.lower() == word.lower():
+            return name, group
+    raise VolumeError(f"no audio source called {word}. Run 'vm ls' to see them.", 2, "not_found")
 
 
 # ======================================================================
@@ -124,56 +147,106 @@ def _list(options):
 
 
 # ======================================================================
+# CHANGE — through the shared engine (_ops): planned, the old level saved to the journal, applied, read back.
+# 'vm ...' and 'cs' run the same code.
+# ======================================================================
+def _percent(params):
+    try:
+        percent = float(params.get("percent"))
+    except (TypeError, ValueError):
+        raise VolumeError("percent needs a number from 0 to 100", 2, "usage")
+    return max(0, min(100, round(percent)))
+
+
+def _plan_set(params):
+    name, group = _find(params.get("source"))
+    after = _percent(params)
+    before = _get_percent(group)
+    return {
+        "target": name, "before": {"percent": before}, "after": {"percent": after}, "noop": before == after,
+        "needs_admin": False, "restart": "none", "disrupts": None, "confirm": None,
+        "summary": f"set {name} volume: {before}% -> {after}%",
+    }
+
+
+def _apply_set(plan):
+    _, group = _find(plan["target"])
+    _set_percent(group, plan["after"]["percent"])
+
+
+def _read_set(plan):
+    _, group = _find(plan["target"])
+    return {"percent": _get_percent(group)}
+
+
+def _restore_set(plan):
+    _, group = _find(plan["target"])
+    _set_percent(group, plan["before"]["percent"])
+
+
+def _close(expected, actual):
+    return abs(expected["percent"] - actual["percent"]) <= TOLERANCE
+
+
+def _param(name, required, text):
+    return {"name": name, "required": required, "help": text}
+
+
+OPERATIONS = {
+    "set": {
+        "summary": "set the system or one app's volume to a percent",
+        "params": [
+            _param("source", True, "system, or an app name from 'vm ls' (an id also works, but ids shift)"),
+            _param("percent", True, "0 to 100; a value outside is clamped"),
+        ],
+        "changes_system": True, "needs_admin": False, "restart": "none",
+        "side_effects": "Takes effect at once; a loud setting can be unpleasant. The read-back may differ by 1 percent.",
+        "plan": _plan_set, "apply": _apply_set, "read": _read_set, "restore": _restore_set, "same": _close,
+    },
+}
+_SELF = types.SimpleNamespace(NAME=NAME, OPERATIONS=OPERATIONS)
+
+
+# ======================================================================
 # COMMAND — app.py calls run(args) with everything after "volume"/"vm"
 # ======================================================================
 def _dispatch(args, options):
     if args[0].lower() in ("ls", "list"):
+        if options["dry_run"]:
+            raise VolumeError("vm ls changes nothing, so --dry-run does nothing", 2, "usage")
         if len(args) > 1:
-            raise VolumeError("usage: vm ls", 2)
+            raise VolumeError("usage: vm ls", 2, "usage")
         _list(options)
-        return
-
-    try:
-        source_id = int(args[0])
-    except ValueError:
-        raise VolumeError(f"unknown volume command: {args[0]}\nusage: vm {USAGE}", 2)
-
-    name, group = _get_source(source_id)
+        return 0
 
     if len(args) == 1:
-        _report(options, source_id, name, _get_percent(group))
-        return
-
-    try:
-        percent = float(args[1])
-    except ValueError:
-        raise VolumeError("volume needs a number from 0 to 100", 2)
-    percent = max(0, min(100, round(percent)))
-    _set_percent(group, percent)
-    _report(options, source_id, name, _get_percent(group))  # read back, so it shows what Windows has
+        if options["dry_run"]:
+            raise VolumeError("showing a volume changes nothing, so --dry-run does nothing", 2, "usage")
+        name, group = _find(args[0])
+        _report(options, name, _get_percent(group))
+        return 0
+    if len(args) != 2:
+        raise VolumeError(f"usage: vm {USAGE}", 2, "usage")
+    return _ops.execute([{"module": _SELF, "op": "set", "params": {"source": args[0], "percent": args[1]}}], options)
 
 
-def _report(options, source_id, name, percent):
+def _report(options, name, percent):
     if options["json"]:
-        _core.print_json({"id": source_id, "name": name, "volume": percent})
+        _core.print_json({"name": name, "volume": percent})
     else:
         print(f"{name}: {percent}%")
 
+
 def run(args):
     """Run one volume command; returns an exit code."""
-    args, options = _core.split_flags(args)
-    if not args:
-        print(f"usage: vm {USAGE}")
-        return 0
-    if args[0].lower() in ("help", "-h", "--help", "?"):
+    args, options = _core.split_flags(args, _core.DRY_FLAGS)
+    if not args or args[0].lower() in _core.HELP_WORDS:
         print(f"usage: vm {USAGE}")
         return 0
     try:
-        _dispatch(args, options)
-        return 0
-    except VolumeError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return e.code
+        return _dispatch(args, options)
+    except _core.CommandError as e:
+        return _core.report_error(e)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,11 @@ services: Windows services, the background programs Windows runs. Routed from ap
     svc <id> auto|manual|disabled
                                  start with Windows, start only when needed, or never start
 
+Add --dry-run to any change to see exactly what it would do, and --json --yes for a script: the result says
+whether it applied, the state Windows reports afterwards, and the undo ('rb last'). The previous state is saved
+before anything changes. 'cs' can batch these changes (operations: state, startup).
+Prefer names to ids: ids follow the sorted list and shift when a service is added or removed.
+
 Listing, showing and every read-only view need no administrator rights. Starting, stopping, restarting and
 changing the startup type do, because Windows only lets administrators control services.
 Setting a service to disabled asks first, and it is the one change here that can keep
@@ -30,11 +35,13 @@ import os
 import re
 import sys
 import time
+import types
 import winreg
 from collections import defaultdict
 
 import _core
 import _net
+import _ops
 import _probe
 
 # ======================================================================
@@ -70,6 +77,7 @@ HELP = [
     ("svc <id> restart", "stop it and start it again"),
     ("svc <id> auto|manual|disabled", "start with Windows, start only when needed, or never (asks first)"),
 ]
+DRY_RUN = True  # the changes take --dry-run, and every one is saved to the journal for 'rb'
 TIP = (
     "Ids follow the list, sorted by name, so they shift. A name works too: svc status Spooler. "
     "The read-only views need no administrator rights. Changes need an administrator terminal."
@@ -88,12 +96,11 @@ SECONDS = 15  # how long to wait for a service to reach the state we asked for
 STATE_COLORS = {"RUNNING": _net.GREEN, "STOPPED": _net.GREY}
 
 
-class ServiceError(Exception):
-    """An error with an exit code: 1 for system errors, 2 for bad usage."""
+class ServiceError(_core.CommandError):
+    """An error with an exit code: 1 for system errors, 2 for bad usage; error is the machine-readable code."""
 
-    def __init__(self, message, code=1):
-        super().__init__(message)
-        self.code = code
+    def __init__(self, message, code=1, error=None):
+        super().__init__(message, code, error)
 
 
 # ======================================================================
@@ -136,11 +143,11 @@ def _in(services, word):
         for svc in services:
             if svc["id"] == int(word):
                 return svc
-        raise ServiceError(f"no service with id {word}. Run 'svc ls' to see them.", 2)
+        raise ServiceError(f"no service with id {word}. Run 'svc ls' to see them.", 2, "not_found")
     for svc in services:
         if svc["name"].lower() == word.lower():
             return svc
-    raise ServiceError(f"no service called {word}. Run 'svc ls' to see them.", 2)
+    raise ServiceError(f"no service called {word}. Run 'svc ls' to see them.", 2, "not_found")
 
 
 def _get(word):
@@ -511,115 +518,225 @@ def _show(svc, options):
     print(color + f"  {svc['state'].lower()}" + _net.RESET + f", startup {svc['startup']}")
 
 
-def _report(svc, options):
-    _reread(svc)
-    if options["json"]:
-        _core.print_json(_data(svc))
+# ======================================================================
+# CHANGES — start, stop, restart and the startup type, through the shared engine (_ops):
+# planned, confirmed, the old state saved to the journal, applied, read back. 'svc <id> ...' and 'cs' run the same code.
+# ======================================================================
+STATE_WORDS = {"running": "RUNNING", "on": "RUNNING", "start": "RUNNING",
+               "stopped": "STOPPED", "off": "STOPPED", "stop": "STOPPED", "restart": "RESTART"}
+STARTUP_LABELS = {"auto": "auto", "manual": "manual", "disabled": "disabled", "delayed": "auto (delayed)"}
+# the word sc config wants for each label we can set (and restore)
+SC_START = {"auto": "auto", "manual": "demand", "disabled": "disabled", "auto (delayed)": "delayed-auto"}
+# well-known services whose stopping or disabling can drop network connections. A hint, not a full list.
+CONNECTIVITY_SERVICES = {"dhcp", "dnscache", "netman", "nlasvc", "netprofm", "wlansvc", "wcmsvc", "lanmanworkstation",
+                         "lanmanserver", "mpssvc", "bfe", "eaphost", "rasman", "remoteaccess", "sharedaccess", "wwansvc"}
+CONNECTIVITY_NOTE = "this service carries network settings or connections; stopping or disabling it may interrupt them"
+
+
+def _param(name, required, text):
+    return {"name": name, "required": required, "help": text}
+
+
+def _find_service(word):
+    """The service a name or id points at, as {name, display_name}. A name needs no full listing."""
+    if not isinstance(word, str) or not word.strip():
+        raise ServiceError("service must be a service name (or an id from 'svc ls')", 2, "usage")
+    word = word.strip()
+    if word.isdigit():
+        svc = _get(word)
+        return {"name": svc["name"], "display_name": svc["display_name"]}
+    ok, text = _net.run_tool(["sc", "query", word])
+    found = re.search(r"SERVICE_NAME:\s*(\S+)", text)
+    if not ok or not found:
+        if "1060" in text or "does not exist" in text.lower():
+            raise ServiceError(f"no service called {word}. Run 'svc ls' to see them.", 2, "not_found")
+        raise ServiceError(_net.explain(text))
+    name = found.group(1)
+    display = _net.reg_read(SERVICES_KEY + name, "DisplayName") or ""
+    return {"name": name, "display_name": name if not display or display.startswith("@") else display}
+
+
+def _word(params, key, choices):
+    value = params.get(key)
+    if not isinstance(value, str) or value.lower() not in choices:
+        raise ServiceError(f"{key} must be one of: {', '.join(sorted(set(choices)))}", 2, "usage")
+    return value.lower()
+
+
+def _plan_state(params):
+    svc = _find_service(params.get("service"))
+    want = STATE_WORDS[_word(params, "state", STATE_WORDS)]
+    name = svc["name"]
+    state = _net.service_state(name)
+    if state not in ("RUNNING", "STOPPED"):
+        raise ServiceError(f"{name} is {state.lower().replace('_', ' ')} right now. Wait for it to settle, or run 'svc stuck'.", 1, "busy")
+    after = "RUNNING" if want == "RESTART" else want
+    stops = want in ("STOPPED", "RESTART") and state == "RUNNING"
+    plan = {
+        "target": name, "before": {"state": state}, "after": {"state": after},
+        "noop": want != "RESTART" and state == want,
+        "needs_admin": True, "restart": "none", "display_name": svc["display_name"], "action": want,
+        "disrupts": CONNECTIVITY_NOTE if stops and name.lower() in CONNECTIVITY_SERVICES else None,
+        "confirm": None,
+    }
+    if want == "RESTART":
+        plan["summary"] = f"restart {name} (it is unavailable for a moment)"
     else:
-        print(f"{svc['name']}: {svc['state'].lower()}, startup {svc['startup']}")
+        plan["summary"] = f"{'start' if want == 'RUNNING' else 'stop'} {name}: {state.lower()} -> {after.lower()}"
+    if want == "STOPPED":
+        plan["confirm"] = (f"Stop {name} ({svc['display_name']})? Anything that uses it stops working until it starts "
+                           "again. Undo with 'rb last'. [y/N]: ")
+    return plan
 
 
-def _run_state(svc, word, options):
-    name = svc["name"]
-    want = "RUNNING" if word in RUN_ON else "STOPPED"
-    if svc["state"] == want:
-        print(f"{name} is already {want.lower()}")
-        return
-
-    _net.need_admin()  # check before announcing, so a refused change never says "starting..."
-    if want == "STOPPED" and not _core.confirm(
-        f"Stop {name} ({svc['display_name']})? Anything that uses it stops working until it starts "
-        "again. [y/N]: ",
-        options["yes"],
-    ):
-        print("cancelled")
-        return
-
-    if want == "RUNNING":
-        print(f"starting {name}...")
-        ok, text = _net.run_tool(["sc", "start", name])
-        if not ok:
-            hint = " Set its startup to manual or auto first." if "disabled" in text.lower() else ""
-            raise ServiceError(_net.explain(text) + hint)
-    else:
-        print(f"stopping {name}...")
-        ok, text = _net.run_tool(["sc", "stop", name])
-        if not ok:
-            raise ServiceError(_net.explain(text))
-
-    if not _wait_for(name, want):
-        raise ServiceError(f"{name} did not reach {want.lower()} within {SECONDS} seconds. Check it with 'svc {svc['id']}'.")
-    _report(svc, options)
+def _wait_state(name, state):
+    if not _wait_for(name, state):
+        raise ServiceError(f"{name} did not reach {state.lower()} within {SECONDS} seconds. Check it with 'svc {name}'.", 1, "timeout")
 
 
-def _restart(svc, options):
-    name = svc["name"]
-    _net.need_admin()
-    print(f"restarting {name}... expect it to be unavailable for a moment.")
-    if not _net.restart_service(name, SECONDS):
-        raise ServiceError(f"{name} did not come back to running. Try 'svc {svc['id']} on'.")
-    _report(svc, options)
+def _start(name):
+    ok, text = _net.run_tool(["sc", "start", name])
+    if not ok:
+        hint = " Set its startup to manual or auto first." if "disabled" in text.lower() else ""
+        raise ServiceError(_net.explain(text) + hint)
+    _wait_state(name, "RUNNING")
 
 
-def _set_startup(svc, word, options):
-    name = svc["name"]
-    _net.need_admin()
-    if word == "disabled" and not _core.confirm(
-        f"Set {name} to disabled? It won't start with Windows, or when something asks for it, "
-        f"until you set it to manual or auto again. [y/N]: ",
-        options["yes"],
-    ):
-        print("cancelled")
-        return
-    ok, text = _net.run_tool(["sc", "config", name, "start=", STARTUP_WORDS[word]])
+def _stop(name):
+    ok, text = _net.run_tool(["sc", "stop", name])
     if not ok:
         raise ServiceError(_net.explain(text))
-    # the change is read back from the registry, so the report is what Windows stored
-    _report(svc, options)
-    if not options["json"]:
-        print("This sets when it starts. It does not start or stop it now.")
+    _wait_state(name, "STOPPED")
+
+
+def _apply_state(plan):
+    name = plan["target"]
+    if plan["action"] == "RESTART":
+        if not _net.restart_service(name, SECONDS):
+            raise ServiceError(f"{name} did not come back to running. Try 'svc {name} on'.", 1, "timeout")
+    elif plan["action"] == "RUNNING":
+        _start(name)
+    else:
+        _stop(name)
+
+
+def _read_state(plan):
+    return {"state": _net.service_state(plan["target"])}
+
+
+def _restore_state(plan):
+    name = plan["target"]
+    if plan["before"]["state"] == "RUNNING":
+        if _net.service_state(name) != "RUNNING":
+            _start(name)
+    elif _net.service_state(name) != "STOPPED":
+        _stop(name)
+
+
+def _plan_startup(params):
+    svc = _find_service(params.get("service"))
+    name = svc["name"]
+    after = STARTUP_LABELS[_word(params, "mode", STARTUP_LABELS)]
+    before = _startup(name)
+    if before not in SC_START:
+        raise ServiceError(f"{name} has startup type {before}, which is not changed from here (drivers and unknown types are left alone).", 1, "unsupported")
+    plan = {
+        "target": name, "before": {"startup": before}, "after": {"startup": after}, "noop": before == after,
+        "needs_admin": True, "restart": "none", "display_name": svc["display_name"],
+        "summary": f"set {name} startup: {before} -> {after} (when it starts; it is not started or stopped now)",
+        "disrupts": CONNECTIVITY_NOTE if after == "disabled" and name.lower() in CONNECTIVITY_SERVICES else None,
+        "confirm": None,
+    }
+    if after == "disabled":
+        plan["confirm"] = (f"Set {name} to disabled? It won't start with Windows, or when something asks for it, until "
+                           "you set it to manual or auto again. Undo with 'rb last'. [y/N]: ")
+    return plan
+
+
+def _set_startup_type(name, label):
+    ok, text = _net.run_tool(["sc", "config", name, "start=", SC_START[label]])
+    if not ok:
+        raise ServiceError(_net.explain(text))
+
+
+def _apply_startup(plan):
+    _set_startup_type(plan["target"], plan["after"]["startup"])
+
+
+def _read_startup(plan):
+    return {"startup": _startup(plan["target"])}
+
+
+def _restore_startup(plan):
+    _set_startup_type(plan["target"], plan["before"]["startup"])
+
+
+OPERATIONS = {
+    "state": {
+        "summary": "start, stop or restart a service now",
+        "params": [
+            _param("service", True, "the service name (e.g. Spooler); an id from 'svc ls' also works but shifts"),
+            _param("state", True, "running, stopped or restart"),
+        ],
+        "changes_system": True, "needs_admin": True, "restart": "none",
+        "side_effects": "Anything that depends on the service is affected while it is stopped. Stopping a network "
+                        "service (DHCP, DNS client, WLAN and similar) may drop connections.",
+        "plan": _plan_state, "apply": _apply_state, "read": _read_state, "restore": _restore_state,
+    },
+    "startup": {
+        "summary": "set when a service starts: auto, manual, disabled or delayed",
+        "params": [
+            _param("service", True, "the service name (e.g. Spooler); an id from 'svc ls' also works but shifts"),
+            _param("mode", True, "auto, manual, disabled or delayed (auto, started a little after boot)"),
+        ],
+        "changes_system": True, "needs_admin": True, "restart": "none",
+        "side_effects": "Takes effect at the next start of Windows or of the service; it does not start or stop the "
+                        "service now. Disabled keeps it from starting even when something asks for it.",
+        "plan": _plan_startup, "apply": _apply_startup, "read": _read_startup, "restore": _restore_startup,
+    },
+}
+_SELF = types.SimpleNamespace(NAME=NAME, OPERATIONS=OPERATIONS)
 
 
 def _change(args, options):
-    svc = _get(args[0])
     if len(args) == 1:
-        _show(svc, options)
-        return
+        _show(_get(args[0]), options)
+        return 0
     if len(args) != 2:
-        raise ServiceError("usage: svc <id> on|off|restart|auto|manual|disabled", 2)
+        raise ServiceError("usage: svc <id> on|off|restart|auto|manual|disabled", 2, "usage")
 
     word = args[1].lower()
-    if word in RUN_ON or word in RUN_OFF:
-        _run_state(svc, word, options)
-    elif word in RESTART:
-        _restart(svc, options)
-    elif word in STARTUP_WORDS:
-        _set_startup(svc, word, options)
+    if word in STATE_WORDS:
+        item = {"module": _SELF, "op": "state", "params": {"service": args[0], "state": word}}
+    elif word in STARTUP_LABELS:
+        item = {"module": _SELF, "op": "startup", "params": {"service": args[0], "mode": word}}
     else:
-        raise ServiceError("use on, off, restart, auto, manual or disabled, e.g. svc 12 restart", 2)
+        raise ServiceError("use on, off, restart, auto, manual or disabled, e.g. svc 12 restart", 2, "usage")
+    return _ops.execute([item], options)
 
 
 def run(args):
     """Run one services command; returns an exit code."""
     os.system("")  # enables ANSI colour codes in the Windows console
-    args, options = _core.split_flags(args)
+    args, options = _core.split_flags(args, _core.DRY_FLAGS)
     if not args or args[0].lower() in _core.HELP_WORDS:
         print(f"usage: {USAGE}")
         return 0
     try:
         word = args[0].lower()
+        if options["dry_run"] and (word in ("ls", "list") or word in READ_WORDS or len(args) < 2):
+            raise ServiceError("that command changes nothing, so --dry-run does nothing", 2, "usage")
         if word in ("ls", "list"):
             if len(args) > 1:
-                raise ServiceError("usage: svc ls", 2)
+                raise ServiceError("usage: svc ls", 2, "usage")
             _list(options)
-        elif word in READ_WORDS:
+            return 0
+        if word in READ_WORDS:
             _read_only(args, options)
-        else:
-            _change(args, options)
-        return 0
-    except (ServiceError, _net.NetError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return e.code
+            return 0
+        return _change(args, options)
+    except _core.CommandError as e:
+        return _core.report_error(e)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ py app.py
 | hotspot | `hs`, `mobilehotspot` | Share this PC's internet as a Wi-Fi hotspot |
 | settings | `menu` | Every setting in one list, and how to open each |
 | location | `lc` | Location services, which apps can use it, and the override |
-| regedit | — | Interactive Windows Registry Editor |
+| regedit | `reg` | Windows Registry: an interactive editor, and direct commands (`reg get`, `reg set`, `reg del` ...) |
 | services | `svc` | Windows services: list, search, status, dependencies, failures, start, stop, restart, startup type |
 | hardware | `hw` | Processor, graphics, memory, drives, motherboard, BIOS, USB, sensors, and a full report |
 | system | `sys` | Uptime, load, processes, startup programs, power, PATH, inventory, and an overall health check |
@@ -31,6 +31,9 @@ py app.py
 | firewall | `fw` | Windows Firewall: turn a network profile on or off, list the rules, and turn one rule on or off |
 | events | `evt` | Windows event logs: errors, crashes, shutdowns, boots, timelines, export and watch |
 | netmon | `net`, `nm`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
+| batch | `cs` | Several changes as one operation: preview, approve once, apply, report, undo |
+| rollback | `rb`, `undo` | Undo a saved change or batch, and list what was changed |
+| catalog | `cat` | Every command and change operation as data: arguments, admin, side effects |
 
 Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 
@@ -54,9 +57,10 @@ External monitors use DDC/CI, so turn on DDC/CI in the monitor's OSD menu if the
 vm ls          list every audio source with its id (0 = system)
 vm 3           show source 3's volume
 vm 3 50        set source 3 to 50%
+vm chrome 50   the same, by name (system works too); every session of the app is set
 ```
 
-Each app is one id, even if it has several audio sessions. Ids are alphabetical, so they can shift when apps start or stop playing. Run `vm ls` first.
+Each app is one id, even if it has several audio sessions. Ids are alphabetical, so they can shift when apps start or stop playing. Prefer the name in scripts. Changes go through the shared change engine (see "Previewing, undoing and batches"), so `--dry-run` shows the exact change and `rb last` undoes it. Windows may store the level a percent off, so the read-back allows 1%.
 
 ### Startup
 
@@ -66,9 +70,10 @@ su 3           show whether app 3 is enabled
 su 3 off       stop app 3 starting at sign-in
 su 3 on        start it at sign-in again
 su rm 3        remove app 3 from startup entirely (asks you to confirm first)
+su user/run/OneDrive off    the same by stable key (the KEY column of su ls; a plain name works if it is unique)
 ```
 
-This changes the same switch as Task Manager's Startup tab, so nothing is deleted. Changes apply at the next sign-in. All-users apps need an administrator terminal.
+`on` and `off` change the same switch as Task Manager's Startup tab, so nothing is deleted. Changes apply at the next sign-in. All-users apps need an administrator terminal. `rm` saves the Run value, or the shortcut file, to the journal first, so `rb last` puts it back. Ids shift; keys do not.
 
 ### Apps
 
@@ -177,6 +182,10 @@ The hotspot uses Windows' tethering API, the one Settings uses, so it needs no a
 
 Add `--json` to a reading command (`wifi info`, `wifi known`, `wifi ip`, `eth info`, `hs status`, `lc why` and others) for machine-readable output. Add `--yes` to answer a confirmation in advance, and only after the person has agreed to that change. Without `--yes` and with no one to answer, a confirmation counts as no. Exit codes are 0 for success, 1 for a system error (including "needs administrator") and 2 for bad usage.
 
+With `--json`, a failed command prints `{"ok": false, "exit_code": ..., "error": {"code": ..., "message": ...}}` on standard error. The `code` is one of `usage`, `not_found`, `ambiguous`, `needs_admin`, `access_denied`, `confirmation_required`, `plan_changed`, `nothing_to_undo`, `too_large`, `verify_failed`, `busy`, `timeout`, `unsupported` or `failed`. A change that goes through the change engine prints one object on standard output: `ok`, `status`, `journal_id`, `plan_hash`, `needs_admin`, `preflight`, `restart_needed`, `changes` (each with `before`, `after`, `status` and the read-back value) and `undo`. With `--json` and no `--yes`, a command that would ask a question stops with `confirmation_required` (exit 2) instead of guessing.
+
+Prefer names, paths and keys to list positions in scripts: `svc Spooler`, `su user/run/OneDrive`, `vm chrome`, `reg get HKCU\... name`. Ids are numbered from the current list and shift.
+
 ### Location
 
 ```
@@ -196,9 +205,23 @@ Location services is the master switch. `lc off` sets the Windows policy "Turn o
 
 Access for apps and the per-app switches are per user and need no administrator rights. Ids follow the list, so run `lc apps` first.
 
-### Registry editor
+### Registry
 
-Type `regedit` to open an interactive editor. It lists the root hives with numbers. Type a number to open that key or show that value, `ls` to list, `cd` to move, and `0` or `exit` to leave.
+Direct commands, for scripts and for people who know what they want. Paths start with a hive (`HKCU`, `HKLM`, `HKCR`, `HKU`, `HKCC`) and use backslashes.
+
+```
+reg ls HKCU\Software\Example              list a key's values and subkeys
+reg get HKCU\Software\Example Port        show one value (--json for type and data)
+reg set HKCU\Software\Example Port --type dword --value 8080
+reg set HKCU\Software\Example Name --type sz --value "hello"
+reg del HKCU\Software\Example Port        delete a value (asks first)
+reg mkkey HKCU\Software\Example\New      create a key
+reg rmkey HKCU\Software\Example\New      delete a key and everything under it (asks first)
+```
+
+Types are `sz`, `expand_sz`, `multi_sz` (items separated by `;`), `dword`, `qword` and `binary` (hex). Every change saves the old value first, so `reg set`, `reg del`, `reg mkkey` and `reg rmkey` all take `--dry-run`, `--json` and `--yes`, and `rb last` undoes them. A key with more than 2000 items inside is refused. Key security (ACLs) and timestamps are not saved. Whether a change needs a restart or sign-out depends on who reads the value, so it is always reported as unknown. Changing `HKLM` needs an administrator terminal, and the command says so before it asks anything.
+
+Type `regedit` for the interactive editor. It lists the root hives with numbers. Type a number to open that key or show that value, `ls` to list, `cd` to move, and `0` or `exit` to leave.
 
 ```
 regedit
@@ -212,7 +235,37 @@ Registry HKCU\Control Panel> rm Tag            asks first
 Registry HKCU\Control Panel> exit
 ```
 
-Commands: `ls`, `cd`, `pwd`, `get`, `add`, `set`, `rm`, `mkdir`, `rmdir`, `help`, `clear`, `exit`. Types are `sz`, `expand_sz`, `multi_sz` (items separated by `;`), `dword`, `qword` and `binary` (hex). Deleting asks first, and a key with anything under it needs its name typed. The top two levels of a hive can't be deleted. The editor uses Windows' own permissions, so changing `HKLM` needs an administrator terminal.
+Commands: `ls`, `cd`, `pwd`, `get`, `add`, `set`, `rm`, `mkdir`, `rmdir`, `help`, `clear`, `exit`. Deleting asks first, and a key with anything under it needs its name typed. The top two levels of a hive can't be deleted.
+
+### Previewing, undoing and batches
+
+Registry, service, startup and volume changes share one engine (`_ops.py`). Other pages do not use it yet, and `--dry-run` on them exits 2.
+
+```
+svc Spooler off --dry-run            show the exact change (before and after), what it needs, and stop
+svc Spooler off --yes --json         apply it; the result says applied, failed or unverified, and whether a restart is needed
+rb ls                                every saved change, newest first
+rb show <id>                         one entry in full
+rb last --dry-run                    what undoing the latest change would put back
+rb last                              undo it (asks first; --yes answers in advance)
+cs changes.json --dry-run            preview a batch; the result has a plan hash
+cs changes.json --yes --expect <hash>   apply the batch only if it is still the plan that was previewed
+cs changes.json --yes --atomic       if one change fails, put the earlier ones back
+```
+
+A batch file is `{"changes": [{"page": "services", "op": "state", "args": {"service": "Spooler", "state": "stopped"}}, ...]}`; `cs -` reads it from standard input. Every change is planned before anything is applied: one bad change, or two changes to the same target, stops the whole batch with nothing changed. The batch asks once for the group. Changes then run in order, each read back after it is made. The first failure stops the rest, which are reported as skipped. The result lists what succeeded, what failed, and the `rb` command that undoes it. Before it asks, it says which changes need administrator rights (and refuses if this terminal is not elevated) and which may cut connectivity.
+
+Undo reads the current state first and warns if something changed it again since. Journals are kept in `%LOCALAPPDATA%\w11-cli-console\journal.json`, the last 200 entries.
+
+### The command catalog
+
+```
+cat                       every page and its change operations
+cat services              one page: its commands, and each operation's arguments
+cat --json                the same as data, for an agent
+```
+
+Each change operation lists its arguments, whether it changes the system, whether it needs administrator rights, whether it needs a restart or sign-out, its side effects, and whether it takes `--dry-run`. Older read and change commands are listed from their help text with those fields set to `null` and `declared: false`, meaning nobody has said what they need; the catalog does not guess.
 
 ### Services
 
@@ -239,9 +292,11 @@ svc 12 restart                  stop and start it again
 svc 12 auto                     start with Windows
 svc 12 manual                   start only when something needs it
 svc 12 disabled                 never start it (asks first)
+svc Spooler delayed             start shortly after Windows has started
+svc Spooler off --dry-run       show the exact change and stop (any change takes --dry-run, --json, --yes)
 ```
 
-Listing, showing and every read-only view need no administrator rights. Starting, stopping, restarting and changing the startup type need an administrator terminal, and the page checks that before it announces anything. Stopping a service and setting one to disabled ask first. A stopped service can stop other programs from working until it starts again, and a disabled service stays off after a restart until it is set back to manual or auto. Setting it back undoes that.
+Listing, showing and every read-only view need no administrator rights. Starting, stopping, restarting and changing the startup type need an administrator terminal, and the page checks that before it announces anything. Stopping a service and setting one to disabled ask first. A stopped service can stop other programs from working until it starts again, and a disabled service stays off after a restart until it is set back to manual or auto. Setting it back undoes that, as does `rb last`. Boot, system and unknown start types (drivers) are refused. Stopping a connectivity service such as DHCP Client or DNS Client is flagged as likely to cut the network.
 
 ### Hardware
 
@@ -392,6 +447,14 @@ What it can and cannot tell you:
 
 Samples are saved to `%LOCALAPPDATA%\w11-cli-console\net-history.jsonl` once a minute while `net live` runs, and kept for 30 days. The first-seen times are in `net-seen.json` in the same folder.
 
+## Tests
+
+```powershell
+py -m unittest discover -s tests -t .
+```
+
+The tests fake Windows (the registry, `sc`, audio sessions, the Startup folder), so they run anywhere and prove the logic, the exit codes, the confirmation questions, rollback and a failure partway through a batch. They do not prove that Windows accepts the calls. `tests/SMOKE.md` is the checklist to run on a disposable Windows 11 machine; it has not been run yet.
+
 ## Adding a setting
 
 Create a `.py` file in this folder. `app.py` loads it automatically. It needs:
@@ -413,6 +476,9 @@ def run(args):             # args = words after the name
 
 - `app.py`: the console and command routing
 - `_core.py`: code shared by app.py and the pages (finding pages, drawing intros, --json and --yes)
+- `_ops.py`: the change engine: plan, preview, journal, apply with read-back, rollback, batches
+- `batch.py`, `rollback.py`, `catalog.py`: the `cs`, `rb` and `cat` pages
+- `tests/`: unit tests with Windows faked (`py -m unittest discover -s tests -t .`), and `tests/SMOKE.md`, a checklist for a disposable Windows machine
 - `_net.py`: code shared by the wifi and ethernet pages (adapter details, IP, DNS, sharing, features, 802.1X)
 - `intro.txt`: the banner shown when the console starts
 - `settings.py`: the `settings` list, which shows every setting
