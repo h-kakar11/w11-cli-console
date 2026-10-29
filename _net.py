@@ -74,12 +74,12 @@ BUILT_IN = {"ms_tcpip", "ms_tcpip6"}  # part of Windows' TCP/IP, so they can be 
 NETCFG_CLASSES = {"client": "c", "service": "s", "protocol": "p"}
 
 
-class NetError(Exception):
-    """An error with an exit code: 1 for system errors, 2 for bad usage."""
+class NetError(_core.CommandError):
+    """An error with an exit code: 1 for system errors, 2 for bad usage.
+    A CommandError, so the shared engine and --json error reporting handle it too."""
 
-    def __init__(self, message, code=1):
-        super().__init__(message)
-        self.code = code
+    def __init__(self, message, code=1, error=None):
+        super().__init__(message, code, error)
 
 
 # ======================================================================
