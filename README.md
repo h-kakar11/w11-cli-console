@@ -4,10 +4,16 @@ Change Windows 11 settings from the command line. Run `app.py`, then type `setti
 
 ## Setup
 
+Windows 11 and Python 3 (developed on 3.14; the `py` launcher is assumed below).
+
 ```powershell
 py -m pip install -r requirements.txt
 py app.py
 ```
+
+`requirements.txt` lists `pycaw`, `psutil` and `comtypes`, plus one `winrt-*` package per Windows Runtime namespace. pywinrt ships each namespace as its own package, and an import fails if its package is missing. The hotspot needs `winrt-Windows.Networking.NetworkOperators` and `winrt-Windows.Networking.Connectivity`. Bluetooth needs `winrt-Windows.Devices.Bluetooth`, `winrt-Windows.Devices.Enumeration` and `winrt-Windows.Devices.Radios`. A page whose package is missing prints a warning when the console starts and is left out; the other pages still work.
+
+To run the tests, which use fakes and never change your settings, see [Testing](#testing).
 
 ## Commands
 
@@ -31,6 +37,13 @@ py app.py
 | firewall | `fw` | Windows Firewall: turn a network profile on or off, list the rules, and turn one rule on or off |
 | events | `evt` | Windows event logs: errors, crashes, shutdowns, boots, timelines, export and watch |
 | netmon | `net`, `nm`, `traffic` | Live network monitor: connections, programs and domains, traffic per adapter, kill and block |
+| bluetooth | `bt` | Bluetooth radio, paired devices, pairing and removal |
+| display | `dsp`, `res`, `resolution` | Resolution, refresh rate, HDR, rotation, layout and scale |
+| sound | `snd`, `audio` | Default sound devices, device volume and mute, live levels |
+| privacy | `priv`, `perm`, `permissions` | App permissions: camera, microphone, location and more |
+| environment | `env`, `vars` | Environment variables and PATH, with backup and undo |
+| update | `wu`, `winupdate`, `updates` | Windows Update: pending, history, install, pause |
+| defender | `def`, `av`, `wd` | Windows Defender. **Unfinished: not available yet** (see below) |
 
 Every name can be shortened as shown, and `ls` can be written as `list`. `rm` can also be written as `remove`, `delete`, `uninstall` or `del`. So `vm list` and `volume ls` do the same thing.
 
@@ -392,6 +405,105 @@ What it can and cannot tell you:
 
 Samples are saved to `%LOCALAPPDATA%\w11-cli-console\net-history.jsonl` once a minute while `net live` runs, and kept for 30 days. The first-seen times are in `net-seen.json` in the same folder.
 
+### Bluetooth, display, sound, privacy, environment and update
+
+> **Not yet checked on a real PC.** These six pages were written and tested only with Windows faked (see [Testing](#testing)). Their logic, output, `--json` keys, exit codes and confirmations are tested; what Windows actually returns is not. Read before you change, and expect to find wording or parsing issues on first real use.
+
+Type a page's name alone (`bt`, `dsp`, `snd`, `priv`, `wu`) to see its commands. Each of those shows its current state and changes nothing. `env` shows its commands instead.
+
+```
+bt                 the radio and your paired devices
+bt on | off        turn Bluetooth on or off
+bt scan            find nearby devices in pairing mode, then bt pair <n>
+bt rm <id>         unpair a device (asks first)
+bt why             Bluetooth is not working: what is wrong, and what fixes it
+```
+
+```
+dsp                       list displays: resolution, refresh rate, scale, HDR
+dsp 1 res 1920x1080       change the resolution (1080p, 1440p and 4k work too)
+dsp 1 hz 144              change the refresh rate
+dsp project extend        the Win+P choices
+dsp 1 rotate 90|hdr on    rotation and HDR
+dsp layout                draw where the displays sit
+```
+
+```
+snd                       playback and recording devices, defaults marked
+snd default 3             make device 3 the default
+snd 3 volume 40 | mute    device volume and mute (one app's volume is vm)
+snd why                   no sound? the usual causes and fixes
+```
+
+```
+priv                      every permission, and what is using it right now
+priv camera off           block every app from the camera (priv camera on undoes it)
+priv camera 2 off         block one app; ids come from 'priv camera'
+priv why camera           why apps cannot use it, and the command that fixes it
+```
+
+```
+env ls                    your variables and the PC's, numbered
+env set NAME value        set one for you (--system for everyone: administrator)
+env path add <folder>     add a folder to your PATH
+env undo                  put back what the last change replaced
+```
+
+```
+wu                        Windows version, last check, restart pending, problems
+wu ls                     search for pending updates, numbered
+wu install <id>|all       download and install (administrator; asks first; never restarts)
+wu history | wu why       what installed, and why updates are stuck
+wu pause [days] | resume  pause updates for up to 35 days (administrator)
+```
+
+Each page's intro lists the rest. Notes:
+
+- `env` saves a backup before every change, in `%LOCALAPPDATA%\w11-cli-console`, and `env undo` restores it. A changed variable only reaches programs started afterwards.
+- `bt connect`, `bt disconnect`, `snd mono`, `snd apps`, `snd enable`, `snd disable`, `dsp nightlight`, `dsp <id> scale` and the `open` commands open Windows Settings instead of changing anything, because Windows gives programs no documented way to do those. See [Commands that open Settings](#commands-that-open-settings).
+- `wu` reads Windows Update through its own API. A search can take up to a minute. `wu install` never restarts the PC.
+
+### Defender (unfinished)
+
+`defender.py` is a partly written page: it has its table of protection switches but no `run()` function yet, so it has no commands. The console skips a page without `run()`, so `def`, `av` and `wd` are not recognised and `defender` does not appear in `settings`. Until it is finished, use Windows Security.
+
+## Administrator rights
+
+Most reading needs none. A few readings do (drive health and TPM in `hw`, the Security log and boot times in `evt`), and the page says "needs administrator rights" instead of showing a blank. These changes need them, and each page checks before it announces anything, so you get "needs administrator rights" and exit code 1 rather than a half-done change:
+
+- Wi-Fi and Ethernet: IP, DNS, sharing, features, metered Ethernet, Ethernet 802.1X
+- `svc` start, stop, restart and startup type; `dvc` enable, disable, restart and driver changes; `fw` changes; `net block`; `evt clear`
+- `lc off`; changes to anything under `HKLM` in `regedit`; changing an all-users startup app
+- `env set --system`; `priv <permission> device`, `priv general diagnostics` and `priv general activity`; `snd startup`; `bt service restart`
+- `wu install`, `pause`, `resume`, `hide`, `uninstall`, `wu drivers` and `wu options microsoft`
+
+Open an administrator terminal (right-click the terminal, Run as administrator) for those.
+
+## Commands that open Settings
+
+Where Windows has no supported way for a program to read or change something, the page opens the exact Settings page and says what to choose. It does not write hidden registry values it has not seen documented. These are intentional, not bugs:
+
+| Command | Why it opens Settings |
+|---|---|
+| `hs over` | Windows has no API for the hotspot's "Share over" |
+| `bt connect`, `bt disconnect`, `bt open` | no supported way to connect or disconnect a paired device (`bt more` opens the classic Bluetooth dialog instead) |
+| `dsp nightlight`, `dsp <id> scale <percent>`, `dsp open` | no documented way to change Night light or the scale (`dsp scale` alone only reads) |
+| `snd mono`, `snd apps`, `snd enable`, `snd disable`, `snd open` | no documented way to change these |
+| `snd default <id>` | only if Windows did not make the device the default: it then opens Settings, says what to choose and exits 1 |
+| `priv open <page>` | opens the matching privacy page |
+| `wu open [page]`, and `wu pause`/`resume` when the pause was made in Settings | Windows Update has no public API for these |
+
+## Testing
+
+The tests use fakes for the registry, `ctypes.windll`, PowerShell, `netsh` and every other Windows call. A guard fails any test that tries a real `subprocess`, `os.startfile`, `os.system` or `input()`, so running them cannot change your settings. They were written and run on Linux, where the Windows modules are stubbed; they are not yet run on Windows itself.
+
+```powershell
+py -m pip install -r requirements-dev.txt
+py -m pytest tests
+```
+
+They cover command routing and alias collisions, argument validation (exit code 2 before the administrator check), `--json` output, exit codes, confirmations (`--yes`, no answer counts as no) and the administrator checks. They do not prove what real Windows returns. Elevated, hardware-specific and system-changing commands still need checking by hand on a real PC.
+
 ## Adding a setting
 
 Create a `.py` file in this folder. `app.py` loads it automatically. It needs:
@@ -416,8 +528,11 @@ def run(args):             # args = words after the name
 - `_net.py`: code shared by the wifi and ethernet pages (adapter details, IP, DNS, sharing, features, 802.1X)
 - `intro.txt`: the banner shown when the console starts
 - `settings.py`: the `settings` list, which shows every setting
-- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`, `netmon.py`, `firewall.py`: settings
+- `_win.py`: code shared by the newer pages (PowerShell, registry, opening Settings, small files in `%LOCALAPPDATA%`)
+- `brightness.py`, `volume.py`, `startup.py`, `apps.py`, `process.py`, `wifi.py`, `ethernet.py`, `hotspot.py`, `location.py`, `regedit.py`, `services.py`, `device.py`, `events.py`, `hardware.py`, `system.py`, `netmon.py`, `firewall.py`, `bluetooth.py`, `display.py`, `sound.py`, `privacy.py`, `environment.py`, `update.py`: settings
+- `defender.py`: unfinished (no `run()` yet), so the console skips it
 - `_probe.py`: code shared by hardware and system (one PowerShell call per group of readings, the processor API, power status, tables)
+- `tests/`: the pytest suite, with fakes for Windows (`windows_fakes.py`, `conftest.py`)
 - `fashion.txt`: the pattern every new page follows, and what each setting is for
-- `brightness.ahk`: the older AutoHotkey version of brightness
-- `requirements.txt`: Python packages (`pycaw`, `psutil`, `comtypes`, and the `winrt` packages the hotspot uses)
+- `requirements.txt`: Python packages (`pycaw`, `psutil`, `comtypes`, and the `winrt-*` packages the hotspot and Bluetooth use); `requirements-dev.txt` adds `pytest`
+- `.gitignore`: keeps `__pycache__`, `.pytest_cache` and virtual environments out of git

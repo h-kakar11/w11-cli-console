@@ -58,7 +58,7 @@ import process as process_page  # the same rule prc uses for system programs
 # ======================================================================
 NAME = "netmon"
 ALIASES = ["net", "nm", "traffic"]
-SUMMARY = "Live network monitor: connections, programs, traffic per adapter, and blocks"
+SUMMARY = "Live network monitor: connections, programs, traffic, blocks"
 USAGE = ("net | net live [sec] | net ls [options] | net <id> | net procs | net bytes [sec] | net iface | net history | "
          "net kill <id> | net block <id|ip>")
 HELP = [

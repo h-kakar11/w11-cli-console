@@ -39,13 +39,21 @@ _net.py          Shared network code for wifi and ethernet, and any future netwo
 _probe.py        Shared reading code for hardware and system: one PowerShell call per group of
                  readings (probe, sample), the processor API, power status, powercfg, and table/emit.
 settings.py      The "settings" list. It reads every page itself, so never edit it to add one.
+_win.py          Shared by the newer pages: PowerShell, registry, opening Settings, small files (see SHARED CODE).
 volume.py, brightness.py, startup.py, apps.py, process.py, wifi.py, ethernet.py, hotspot.py,
-location.py, regedit.py, services.py, device.py, events.py, hardware.py, system.py, netmon.py, firewall.py
-                 The pages.
+location.py, regedit.py, services.py, device.py, events.py, hardware.py, system.py, netmon.py, firewall.py,
+bluetooth.py, display.py, sound.py, privacy.py, environment.py, update.py
+                 The pages (24 are routable, counting settings.py). The last six were written without Windows and are unverified (see OPEN ISSUES).
+defender.py      UNFINISHED: a table of protection switches and no run(). The loader skips a file without NAME and run,
+                 so it is silent and invisible. tests/test_routing.py lists it as expected to fail; remove it from
+                 UNFINISHED there when it gets a run().
 intro.txt        The banner the console prints when it starts.
 README.md        For users: the table of settings and a section per setting.
 requirements.txt Python packages. Install with: py -m pip install -r requirements.txt
-brightness.ahk   The old AutoHotkey version of brightness. Not used.
+                 Every winrt namespace is its own package (see WinRT under WINDOWS LESSONS).
+requirements-dev.txt  requirements.txt plus pytest, for the tests.
+tests/           The pytest suite, run with the Windows side faked (see TESTING). windows_fakes.py holds the fakes.
+.gitignore       __pycache__, .pytest_cache and virtual environments.
 
 Which file to copy:
 - a list with ids, then act on one id .......... volume.py
@@ -98,9 +106,8 @@ ENVIRONMENT (this PC, as last seen)
 - Captured output shows colour codes as raw text, such as [34m. That is expected.
 - Git: remote "origin" is github.com/h-kakar11/w11-cli-console, branch main. Commit and push only
   when asked. If GitHub "shows no updates", check "git log origin/main..main" for commits that were
-  never pushed (that was the cause once). The __pycache__/*.pyc files are tracked by mistake and
-  change on every run. Before you finish, restore them with "git checkout -- __pycache__/" and
-  delete any new untracked .pyc. There is no .gitignore yet.
+  never pushed (that was the cause once). .gitignore keeps __pycache__ and .pytest_cache out of git, and
+  the old tracked .pyc files are removed from the index. Run python with PYTHONDONTWRITEBYTECODE=1 anyway.
 
 ======================================================================
 THE PAGE CONTRACT
@@ -285,14 +292,25 @@ TESTING (without side effects)
   appears correctly in "settings".
 - Run every page's intro once after changing _core.py, since every page uses it.
 - Compile everything: for f in *.py; do py -m py_compile "$f"; done
+- Automated tests: "py -m pip install -r requirements-dev.txt", then "py -m pytest tests". They fake Windows
+  (tests/windows_fakes.py: a dictionary-backed winreg, a fake ctypes.windll, a stub pycaw) and an autouse guard in
+  tests/conftest.py fails any test that reaches the real subprocess, os.startfile, os.system or input(), so a test
+  cannot change the PC. Fixtures: fake_registry, answers("n") for confirmations, as_admin(True/False). They cover
+  routing and alias collisions (test_routing), the header contract, split_flags/confirm/is_admin (test_core), services
+  validation and admin order (test_services), and confirmation/admin/validation paths for startup, process, apps,
+  firewall, events clear and location (test_changes). The other pages (wifi, ethernet, hotspot, update, privacy,
+  bluetooth, display, sound, environment, device, regedit, brightness, volume) have only the routing, header and help
+  tests so far. Add a test with the page: validation exits 2 before the admin check, the admin refusal
+  exits 1 and writes nothing, "n" changes nothing, --json is valid, the result is read back.
+- The tests were written on Linux. They are not yet run on Windows, and they do not prove what Windows returns.
 - Sessions that run in a Linux container cannot run Windows at all. Pages written there (netmon, firewall, device
-  changes, and the pages after them) were tested with the Windows side faked: a winreg stub backed by a dictionary, a fake
-  ctypes.windll, a fake subprocess that answers PowerShell, pnputil, logman and the rest by matching the command text,
-  stub pycaw, comtypes and winrt, and builtins.input replaced to give the answers. That proves the page's logic, its
-  output, its --json keys, its exit codes, and that it asks before it changes anything. It does not prove what Windows
-  returns, so every such page has an OPEN ISSUES entry that lists what to look at on a real PC. Those test scripts live
-  outside the repo (there is no tests folder). If you write a page without Windows, build the same kind of fakes, run
-  python with PYTHONDONTWRITEBYTECODE=1 so no .pyc lands in the project, and say what you could not check.
+  changes, bluetooth, display, sound, privacy, environment, update) were tested with the Windows side faked: a winreg
+  stub backed by a dictionary, a fake ctypes.windll, a fake subprocess that answers PowerShell, pnputil, logman and the
+  rest by matching the command text, stub pycaw, comtypes and winrt, and builtins.input replaced to give the answers.
+  That proves the page's logic, its output, its --json keys, its exit codes, and that it asks before it changes
+  anything. It does not prove what Windows returns, so every such page has an OPEN ISSUES entry that lists what to look
+  at on a real PC. If you write a page without Windows, extend tests/windows_fakes.py, run python with
+  PYTHONDONTWRITEBYTECODE=1 so no .pyc lands in the project, and say what you could not check.
 
 ======================================================================
 FINISHING
@@ -305,7 +323,7 @@ FINISHING
 - Check that no alias matches another page's name or alias. Two pages with the same alias silently
   override each other, and nothing warns you.
 - The settings list picks the page up by itself, from NAME, ALIASES, SUMMARY and the first HELP row.
-- Restore the bytecode (git checkout -- __pycache__/) and delete new untracked .pyc files.
+- Run "py -m pytest tests". test_routing fails on an alias that two pages share.
 - Do not commit or push unless asked.
 
 ======================================================================
@@ -431,6 +449,8 @@ OPEN ISSUES (things a future prompt may be about)
   on/off/install/uninstall, metered Ethernet, Ethernet 802.1X, and lc on/off. Wi-Fi 802.1X changes
   also need a work or school network to test against. The 802.1X method templates (PEAP,
   certificate, TTLS) in _net.py are untested.
+- services: a bad word is now rejected (exit 2) before the service is looked up and before the admin check. It
+  used to look the service up first, so "svc 9999 bogus" said "no service" instead of showing the usage.
 - services: start, stop, restart and startup type are not yet verified from an administrator terminal.
   Only the read-only paths (svc ls, svc <id>, --json) and the refusals without admin were run here.
 - device changes (enable, disable, restart, driver add and rm) were written and tested only with the Windows
@@ -451,7 +471,18 @@ OPEN ISSUES (things a future prompt may be about)
 - location.py predates _core's helpers and has its own is_admin and flag handling.
 - app.py's console uses shlex.split, which eats backslashes for every page except regedit.
 - Piping the console's output without PYTHONIOENCODING=utf-8 crashes on the banner.
-- __pycache__ is tracked in git, and there is no .gitignore.
+- defender.py is unfinished (see FILES). Its docstring promises def, why, scan, scans, update, threats, quarantine,
+  clean, on|off <protection>, folders, exclusions, schedule, cpu, asr, smartscreen, device, tamper, events, offline
+  and open, but the file ends at SWITCH_ORDER with no run(). Finish it, or delete it, before anything else is added.
+- bluetooth, display, sound, privacy, environment and update (about 10,000 lines) were written with Windows faked and
+  never run on Windows. Read-only commands first: bt, dsp, snd, priv, wu, env ls. Then the changes, on something you
+  can put back. Check first: the WinRT calls in bluetooth (radio, pairing, battery), the display mode and rotation
+  calls in display (ChangeDisplaySettingsEx), pycaw/IMMDevice defaults in sound, the ConsentStore keys in privacy,
+  the Windows Update Agent COM calls and wusa in update, and the registry type of each variable env writes.
+  Windows Home has no update-pause policy; update opens Settings there.
+- Commands that open Settings on purpose (rule 13): hs over, bt connect|disconnect|open, dsp nightlight|scale|open,
+  snd mono|apps|enable|disable|open (and snd default if the default did not change), priv open, wu open (and
+  wu pause|resume on Home, or for a pause Settings made, and wu uninstall when wusa refuses). They are not bugs.
 - Connection sharing's "Allow other network users to control or disable the shared connection" is
   not implemented: no documented setting was found.
 - IP manual mode is IPv4 only. DNS takes IPv4 and IPv6 servers. DNS over HTTPS is not covered.
@@ -495,3 +526,17 @@ services (svc): The Windows services list, the same as services.msc. It leads wi
 events (evt): The Windows event logs, read so that an agent can reconstruct what happened before a problem. Everyday commands are evt errors, evt recent and evt search. Then the problems by cause (crashes, shutdowns, boot, drivers, services, network, security), then patterns over time (correlate, timeline, frequency, baseline), then logs (list, filter, export, watch, clear). Times read as 2h or 3d. Most logs need no administrator rights; the Security log and boot times do, and the page says so. evt clear is the only change, and it asks for the log's name to be typed, with a backup first unless --no-backup is given. --yes does not skip it.
 
 device (dvc): The Device Manager list, read without changing anything. It leads with dvc ls, then dvc <id> for one device (its driver, what it is plugged into, and its status), then dvc errors for what is wrong. Ids are numbered by name, so they shift. The TIP says that reading needs no administrator rights. The changes (enable, disable, restart, driver add and rm) need an administrator terminal, check it before asking, and read the device back. The 'not connected' state is not an error, and the errors page says so.
+
+bluetooth (bt): Is Bluetooth working, and what is paired. Typing bt shows the radio and the paired devices and changes nothing. Then on/off, scan and pair <n>, rm to unpair (asks first). bt why explains a Bluetooth that is not working. Windows has no API to connect or disconnect a paired device, so those say so and open Settings. Only restarting the Bluetooth service needs an administrator terminal. Not yet run on Windows.
+
+display (dsp, res, resolution): Resolution first, because that is what people come for: dsp <id> res 1920x1080, then refresh rate, then layout and Win+P. Typing dsp lists the displays and changes nothing. The scale and Night light have no documented API, so they open Settings and say what to choose. Not yet run on Windows.
+
+sound (snd, audio): Which device plays and records, and why there is no sound. snd lists the devices with the defaults marked, snd default <id> changes them, snd why walks the usual causes. One app's volume stays in vm. Only snd startup needs an administrator terminal. Several commands open Settings by design (mono, apps, enable and disable). Not yet run on Windows.
+
+privacy (priv, perm, permissions): Who can use the camera, microphone, location and screen, and what is using them now. priv shows every permission, priv <permission> on|off flips the master switch, priv <permission> <id> on|off one app. The per-user switches need no administrator rights; the "device" switch and a few general settings do. Location also has its own page (lc). Not yet run on Windows.
+
+environment (env, vars): Variables and PATH, safely. Every change saves a backup first and env undo puts it back. Setting for everyone (--system) needs an administrator terminal. Deleting asks first. New values reach only programs started afterwards, and the page says so. Not yet run on Windows.
+
+update (wu, winupdate, updates): Windows Update from the terminal. wu shows the status and changes nothing, wu ls searches (up to a minute), wu install <id>|all installs (administrator, asks first, never restarts), wu why explains stuck updates. Pause uses the update policy, which Windows Home ignores, so there it opens Settings. Not yet run on Windows.
+
+defender (def, av, wd): UNFINISHED. A table of protection switches exists and nothing else. Not routable until it has a run(). The intended commands are in its docstring.

@@ -581,14 +581,16 @@ def _set_startup(svc, word, options):
 
 
 def _change(args, options):
+    if len(args) > 2:
+        raise ServiceError("usage: svc <id> on|off|restart|auto|manual|disabled", 2)
+    word = args[1].lower() if len(args) == 2 else None
+    if word and word not in RUN_ON and word not in RUN_OFF and word not in RESTART and word not in STARTUP_WORDS:
+        raise ServiceError("use on, off, restart, auto, manual or disabled, e.g. svc 12 restart", 2)
+
     svc = _get(args[0])
-    if len(args) == 1:
+    if word is None:
         _show(svc, options)
         return
-    if len(args) != 2:
-        raise ServiceError("usage: svc <id> on|off|restart|auto|manual|disabled", 2)
-
-    word = args[1].lower()
     if word in RUN_ON or word in RUN_OFF:
         _run_state(svc, word, options)
     elif word in RESTART:
